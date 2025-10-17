@@ -1,3 +1,12 @@
+# Results folder - Contains sensitive output data from scripts
+Results/
+*.json
+*.csv
+*.log
+
+# Payloads folder - Contains sensitive input data for scripts
+payloads/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
