@@ -8704,6 +8704,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     if ($ownedObjects -and -not $ownedObjects.Error) {
                         $output.OwnedObjects = $ownedObjects
                         Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
+                        Write-Output "    Breakdown: Apps=$($ownedObjects.Analysis.OwnedApplications), SPs=$($ownedObjects.Analysis.OwnedServicePrincipals), Groups=$($ownedObjects.Analysis.OwnedGroups), Devices=$($ownedObjects.Analysis.OwnedDevices), Others=$($ownedObjects.Analysis.OtherOwnedObjects)"
                         
                         # Show details for owned applications (highest priority for privilege escalation)
                         if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
@@ -8744,6 +8745,24 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                             foreach ($other in $ownedObjects.Others) {
                                 $objectType = $other.'@odata.type' -replace '#microsoft\.graph\.', ''
                                 Write-Output "        ${objectType}: $($other.displayName) (ID: $($other.id))"
+                            }
+                        }
+                        
+                        # Fallback: If no specific categories were shown but we have objects, show all details
+                        if ($ownedObjects.Analysis.TotalOwnedObjects -gt 0 -and 
+                            $ownedObjects.Analysis.OwnedApplications -eq 0 -and 
+                            $ownedObjects.Analysis.OwnedServicePrincipals -eq 0 -and 
+                            $ownedObjects.Analysis.OwnedGroups -eq 0 -and 
+                            $ownedObjects.Analysis.OwnedDevices -eq 0 -and 
+                            $ownedObjects.Analysis.OtherOwnedObjects -eq 0) {
+                            Write-Output "    Owned Objects Details (Fallback):"
+                            foreach ($obj in $ownedObjects.OwnedObjects) {
+                                $objectType = if ($obj.'@odata.type') { $obj.'@odata.type' -replace '#microsoft\.graph\.', '' } else { "Unknown" }
+                                Write-Output "        $objectType`: $($obj.displayName) (ID: $($obj.id))"
+                                if ($obj.appId) { Write-Output "          App ID: $($obj.appId)" }
+                                if ($obj.'@odata.type' -match 'application') {
+                                    Write-Host "          *** POTENTIAL PRIVILEGE ESCALATION TARGET ***" -ForegroundColor Red
+                                }
                             }
                         }
                     } else {
@@ -8905,6 +8924,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
             if ($ownedObjects -and -not $ownedObjects.Error) {
                 $output.OwnedObjects = $ownedObjects
                 Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
+                Write-Output "    Breakdown: Apps=$($ownedObjects.Analysis.OwnedApplications), SPs=$($ownedObjects.Analysis.OwnedServicePrincipals), Groups=$($ownedObjects.Analysis.OwnedGroups), Devices=$($ownedObjects.Analysis.OwnedDevices), Others=$($ownedObjects.Analysis.OtherOwnedObjects)"
                 if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
                     Write-Host "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
                     Write-Host "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
