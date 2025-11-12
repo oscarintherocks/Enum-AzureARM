@@ -8743,7 +8743,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                             Write-Output "    Other Owned Objects: $($ownedObjects.Analysis.OtherOwnedObjects)"
                             foreach ($other in $ownedObjects.Others) {
                                 $objectType = $other.'@odata.type' -replace '#microsoft\.graph\.', ''
-                                Write-Output "        $objectType: $($other.displayName) (ID: $($other.id))"
+                                Write-Output "        ${objectType}: $($other.displayName) (ID: $($other.id))"
                             }
                         }
                     } else {
@@ -8884,7 +8884,146 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
 
 
 } else {
-    Write-Output "ARM checks not requested - skipping Azure resource enumeration"
+    # ARM checks not requested, but check if we should do Graph-only enumeration
+    if ($Script:AuthenticationStatus.GraphToken -and $Script:PerformGraphChecks) {
+        Write-Output "`nPerforming enhanced Azure AD enumeration (Graph-only mode)..."
+        
+        try {
+            # Test available Graph API permissions
+            Write-Output "  Testing Graph API permissions and capabilities..."
+            $graphPermissions = Test-GraphApiPermissions
+            $output.GraphApiCapabilities = $graphPermissions
+            
+            Write-Output "    Available Endpoints: $($graphPermissions.AvailableEndpoints -join ', ')"
+            if ($graphPermissions.PermissionErrors.Count -gt 0) {
+                Write-Output "    Restricted Endpoints: $($graphPermissions.PermissionErrors.Count) endpoints require additional permissions"
+            }
+            
+            # Get owned objects first (critical for privilege escalation detection)
+            Write-Output "  Retrieving owned objects..."
+            $ownedObjects = Get-OwnedObjectsViaGraph -AccessToken $AccessTokenGraph
+            if ($ownedObjects -and -not $ownedObjects.Error) {
+                $output.OwnedObjects = $ownedObjects
+                Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
+                if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
+                    Write-Output "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
+                    Write-Output "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
+                    
+                    # Show details for owned applications
+                    foreach ($app in $ownedObjects.Applications) {
+                        Write-Output "        Application: $($app.displayName) (ID: $($app.id))"
+                        if ($app.appId) {
+                            Write-Output "          App ID: $($app.appId)"
+                        }
+                    }
+                }
+                if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
+                    Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
+                    
+                    # Show details for owned service principals
+                    foreach ($sp in $ownedObjects.ServicePrincipals) {
+                        Write-Output "        Service Principal: $($sp.displayName) (ID: $($sp.id))"
+                        if ($sp.appId) {
+                            Write-Output "          App ID: $($sp.appId)"
+                        }
+                    }
+                }
+                if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
+                    Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
+                    
+                    # Show details for owned groups
+                    foreach ($group in $ownedObjects.Groups) {
+                        Write-Output "        Group: $($group.displayName) (ID: $($group.id))"
+                        if ($group.mail) {
+                            Write-Output "          Email: $($group.mail)"
+                        }
+                    }
+                }
+                if ($ownedObjects.Analysis.OwnedDevices -gt 0) {
+                    Write-Output "    Owned Devices: $($ownedObjects.Analysis.OwnedDevices)"
+                    
+                    # Show details for owned devices
+                    foreach ($device in $ownedObjects.Devices) {
+                        Write-Output "        Device: $($device.displayName) (ID: $($device.id))"
+                        if ($device.deviceId) {
+                            Write-Output "          Device ID: $($device.deviceId)"
+                        }
+                    }
+                }
+                
+                # Show details for other owned objects
+                if ($ownedObjects.Analysis.OtherOwnedObjects -gt 0) {
+                    Write-Output "    Other Owned Objects: $($ownedObjects.Analysis.OtherOwnedObjects)"
+                    foreach ($other in $ownedObjects.Others) {
+                        $objectType = $other.'@odata.type' -replace '#microsoft\.graph\.', ''
+                        Write-Output "        ${objectType}: $($other.displayName) (ID: $($other.id))"
+                    }
+                }
+            } else {
+                Write-Output "    No owned objects found or access denied"
+            }
+
+            # Get all applications (if permitted)
+            if ($graphPermissions.CanReadApplications) {
+                Write-Output "  Retrieving all tenant applications..."
+                
+                # Use owned applications for highlighting
+                $ownedApplications = @()
+                if ($ownedObjects -and -not $ownedObjects.Error -and $ownedObjects.Applications) {
+                    $ownedApplications = $ownedObjects.Applications
+                    Write-Verbose "Found $($ownedApplications.Count) owned applications for highlighting"
+                }
+                
+                $allApplications = Get-TenantApplications -OwnedApplications $ownedApplications
+                if ($allApplications -and -not $allApplications.Error) {
+                    $output.TenantApplications = $allApplications
+                    Write-Output "    Applications: $($allApplications.Applications.Count) total applications"
+                    Write-Output "    Service Principals: $($allApplications.ServicePrincipals.Count) service principals"
+                    if ($allApplications.Analysis.ApplicationsWithSecrets -gt 0) {
+                        Write-Output "    Applications with Secrets: $($allApplications.Analysis.ApplicationsWithSecrets)"
+                    }
+                    
+                    # Highlight owned applications
+                    $ownedAppsCount = ($allApplications.Applications | Where-Object { $_.IsOwned -eq $true }).Count
+                    if ($ownedAppsCount -gt 0) {
+                        Write-Output "    *** PRIVILEGE ESCALATION: $ownedAppsCount owned applications detected! ***" -ForegroundColor Red
+                    }
+                }
+            }
+            
+            # Get all users (if permitted)
+            if ($graphPermissions.CanReadUsers) {
+                Write-Output "  Retrieving all tenant users..."
+                $allUsers = Get-TenantUsers
+                if ($allUsers -and -not $allUsers.Error) {
+                    $output.TenantUsers = $allUsers
+                    Write-Output "    Users: $($allUsers.Users.Count) total users"
+                    Write-Output "    Member Users: $($allUsers.Analysis.MemberUsersCount) members"
+                    Write-Output "    Guest Users: $($allUsers.Analysis.GuestUsersCount) guests"
+                    Write-Output "    Enabled Users: $($allUsers.Analysis.EnabledUsersCount) enabled"
+                }
+            }
+            
+            # Get all groups (if permitted)
+            if ($graphPermissions.CanReadGroups) {
+                Write-Output "  Retrieving all tenant groups..."
+                $allGroups = Get-TenantGroups
+                if ($allGroups -and -not $allGroups.Error) {
+                    $output.TenantGroups = $allGroups
+                    Write-Output "    Groups: $($allGroups.Groups.Count) total groups"
+                    Write-Output "    Security Groups: $($allGroups.Analysis.SecurityGroupsCount) security groups"
+                    Write-Output "    Distribution Groups: $($allGroups.Analysis.DistributionGroupsCount) distribution groups"
+                }
+            }
+            
+            Write-Output "Enhanced Azure AD enumeration completed (Graph API scope)"
+            
+        } catch {
+            Write-Warning "Enhanced Graph enumeration failed: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Output "ARM checks not requested - skipping Azure resource enumeration"
+    }
 }
 
 # Azure CLI enumeration (independent of ARM token availability)
