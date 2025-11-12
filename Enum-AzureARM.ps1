@@ -2858,8 +2858,70 @@ function Get-StorageAccountDetails {
                 }
             }
         } catch {
-            Write-Debug "Could not retrieve containers for $StorageAccountName : $($_.Exception.Message)"
-            $storageDetails.Error = "Could not retrieve containers: $($_.Exception.Message)"
+            Write-Debug "Could not retrieve containers via ARM API for $StorageAccountName : $($_.Exception.Message)"
+            
+            # Fallback: Try using Get-AzStorageContainer with storage account context
+            Write-Debug "Attempting container enumeration using Get-AzStorageContainer fallback method"
+            try {
+                # Extract resource group name from storage account ID
+                # Format: /subscriptions/{subscription}/resourceGroups/{resourceGroup}/providers/Microsoft.Storage/storageAccounts/{name}
+                $resourceGroupName = ($StorageAccountId -split '/')[4]
+                Write-Debug "Extracted resource group name: $resourceGroupName"
+                
+                # Create storage account context
+                $storageAccount = Get-AzStorageAccount -ResourceGroupName $resourceGroupName -Name $StorageAccountName -ErrorAction Stop
+                $ctx = $storageAccount.Context
+                
+                # Get containers using storage context
+                $containers = Get-AzStorageContainer -Context $ctx -ErrorAction Stop
+                Write-Debug "Found $($containers.Count) containers using storage context fallback for $StorageAccountName"
+                
+                foreach ($container in $containers) {
+                    $containerDetail = @{
+                        Name = $container.Name
+                        PublicAccess = $container.PublicAccess
+                        LastModified = $container.LastModified
+                        LeaseStatus = "Unknown"
+                        HasImmutabilityPolicy = $false
+                        HasLegalHold = $false
+                        Blobs = @()
+                        BlobCount = 0
+                        Error = $null
+                    }
+                    
+                    # Try to enumerate blobs in this container
+                    try {
+                        Write-Debug "Enumerating blobs in container: $($container.Name)"
+                        $blobs = Get-AzStorageBlob -Container $container.Name -Context $ctx -ErrorAction Stop
+                        
+                        foreach ($blob in $blobs) {
+                            $blobDetail = @{
+                                Name = $blob.Name
+                                Size = $blob.Length
+                                LastModified = $blob.LastModified
+                                ContentType = $blob.BlobType
+                                ETag = $blob.ETag
+                                BlobType = $blob.BlobType
+                            }
+                            $containerDetail.Blobs += $blobDetail
+                        }
+                        $containerDetail.BlobCount = $blobs.Count
+                        Write-Debug "Successfully enumerated $($blobs.Count) blobs in container: $($container.Name)"
+                    } catch {
+                        Write-Debug "Failed to enumerate blobs in container $($container.Name): $($_.Exception.Message)"
+                        $containerDetail.Error = "Could not enumerate blobs: $($_.Exception.Message)"
+                    }
+                    
+                    $storageDetails.Containers += $containerDetail
+                }
+                
+                # Clear the error since fallback method succeeded
+                $storageDetails.Error = $null
+                
+            } catch {
+                Write-Debug "Fallback container enumeration also failed for $StorageAccountName : $($_.Exception.Message)"
+                $storageDetails.Error = "Could not retrieve containers via ARM API or storage context: $($_.Exception.Message)"
+            }
         }
         
         # Get IAM permissions on the storage account
@@ -3137,7 +3199,7 @@ function Get-StorageAccountFiles {
                     }
                     
                     Write-Output "    Trying $($blobsToTry.Count) common file names for blind download"
-                    Write-Output "    This may take a few minutes - progress will be shown below..."
+                    Write-Output "    This may take 15-30 minutes - progress will be shown below..."
                 } else {
                     Write-Output "    Processing container: $($container.name) ($($container.Blobs.Count) blobs)"
                     $blobsToTry = $container.Blobs
@@ -7936,7 +7998,41 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         }
                                         
                                         if ($hasFailedEnumerations) {
-                                            Write-Output "    Blind download mode activated - will attempt common file names in containers with failed blob enumeration (this step takes few minutes to complete, be patient)..."
+                                            # Ask user permission before starting blind download mode
+                                            Write-Host "`n    WARNING: Blind download mode will attempt to guess common file names." -ForegroundColor Yellow
+                                            Write-Host "    This process can take 15-30 minutes to complete and may generate many 404 errors." -ForegroundColor Yellow
+                                            Write-Host "    Do you want to proceed with blind download enumeration? (Y/n) " -ForegroundColor Cyan -NoNewline
+                                            
+                                            # 10-second timeout with default to NO
+                                            $timeout = 10
+                                            $userInput = $null
+                                            $job = Start-Job -ScriptBlock {
+                                                Read-Host
+                                            }
+                                            
+                                            $startTime = Get-Date
+                                            while ((Get-Date) - $startTime -lt (New-TimeSpan -Seconds $timeout) -and $job.State -eq 'Running') {
+                                                Start-Sleep -Milliseconds 100
+                                            }
+                                            
+                                            if ($job.State -eq 'Completed') {
+                                                $userInput = Receive-Job $job
+                                            } else {
+                                                Stop-Job $job
+                                                Write-Host "n (timeout - defaulting to NO)" -ForegroundColor Red
+                                            }
+                                            Remove-Job $job -Force
+                                            
+                                            $proceedWithBlindDownload = $false
+                                            if ($userInput -and ($userInput.ToLower() -eq 'y' -or $userInput.ToLower() -eq 'yes')) {
+                                                $proceedWithBlindDownload = $true
+                                                Write-Host "    User chose to proceed with blind download mode." -ForegroundColor Green
+                                                Write-Output "    Blind download mode activated - will attempt common file names in containers with failed blob enumeration (this step takes 15-30 minutes to complete, be patient)..."
+                                            } else {
+                                                Write-Host "    User chose to skip blind download mode. Continuing with available data only." -ForegroundColor Yellow
+                                                # Clear the containers that would require blind download
+                                                $containersToProcess = $containersToProcess | Where-Object { -not ($_.Error -and $_.Error -like "*blind download*") }
+                                            }
                                         }
                                         
                                         $downloadResult = Get-StorageAccountFiles -StorageAccountName $r.name -StorageAccountKey $detailedStorageInfo.StorageAccountKey -ContainerDetails $containersToProcess -AccountId $script:currentUser
