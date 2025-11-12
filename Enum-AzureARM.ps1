@@ -3370,6 +3370,7 @@ function Get-StorageAccountFiles {
                         
                         # Enhanced authentication method selection with better error handling
                         Write-Debug "      Starting download for $($blob.Name) - trying multiple auth methods..."
+                        $authMethodDetails = @()
                         
                         # Method 1: Try using Az.Storage module with established storage context (BEST METHOD)
                         if (-not $downloadSuccess) {
@@ -3382,21 +3383,35 @@ function Get-StorageAccountFiles {
                                     if (-not $contextToUse -and $StorageAccountKey) {
                                         Write-Debug "      No storage context provided, attempting to create one with storage key"
                                         $contextToUse = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $StorageAccountKey -ErrorAction SilentlyContinue
+                                        $authMethodDetails += "StorageKey-Context"
                                     } elseif (-not $contextToUse) {
                                         Write-Debug "      No storage context or key available, attempting connected account context"
-                                        $contextToUse = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount -ErrorAction SilentlyContinue
+                                        # Check if we're logged into Azure PowerShell first
+                                        $azContext = Get-AzContext -ErrorAction SilentlyContinue
+                                        if ($azContext) {
+                                            Write-Debug "      Azure PowerShell context found, creating storage context"
+                                            $contextToUse = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount -ErrorAction SilentlyContinue
+                                            $authMethodDetails += "AzPowerShell-ConnectedAccount"
+                                        } else {
+                                            Write-Debug "      No Azure PowerShell context available"
+                                            $authMethodDetails += "AzPowerShell-NotLoggedIn"
+                                        }
                                     } else {
                                         Write-Debug "      Using provided storage context for download"
+                                        $authMethodDetails += "ProvidedContext"
                                     }
                                     
                                     if ($contextToUse) {
                                         Get-AzStorageBlobContent -Blob $blob.Name -Container $container.name -Destination $localFilePath -Context $contextToUse -Force -ErrorAction Stop
                                         $downloadSuccess = $true
-                                        $authMethodUsed = "Az.Storage-Context"
+                                        $authMethodUsed = "Az.Storage-Context ($($authMethodDetails -join ','))"
                                         Write-Debug "      Downloaded $($blob.Name) using Az.Storage module with context"
                                     } else {
                                         Write-Debug "      Failed to create storage context for Az.Storage method"
+                                        $authMethodDetails += "ContextCreationFailed"
                                     }
+                                } else {
+                                    $authMethodDetails += "Az.Storage-ModuleNotAvailable"
                                 }
                             } catch {
                                 $errorMsg = $_.Exception.Message
@@ -3404,6 +3419,7 @@ function Get-StorageAccountFiles {
                                     $permissionError = $true
                                 }
                                 Write-Debug "      Failed to download $($blob.Name) using Az.Storage: $errorMsg"
+                                $authMethodDetails += "Az.Storage-Exception: $($errorMsg -replace '\n|\r', ' ')"
                             }
                         }
                         
@@ -3478,7 +3494,16 @@ function Get-StorageAccountFiles {
                                     $permissionError = $true
                                 }
                                 Write-Debug "      Failed to download $($blob.Name) using bearer token: $errorMsg"
+                                $authMethodDetails += "BearerToken-Exception: $($errorMsg -replace '\n|\r', ' ')"
                             }
+                        } elseif (-not $downloadSuccess -and -not $script:accessToken) {
+                            $authMethodDetails += "BearerToken-NotAvailable"
+                        }
+                        
+                        # If all methods failed, add comprehensive failure details
+                        if (-not $downloadSuccess) {
+                            Write-Debug "      All authentication methods failed for $($blob.Name). Attempted methods: $($authMethodDetails -join ' | ')"
+                            $downloadSummary.Errors += "Detailed auth failure for $($blob.Name): $($authMethodDetails -join ' | ')"
                         }
                         
                         if ($downloadSuccess) {
@@ -3534,7 +3559,11 @@ Downloaded: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
                         } else {
                             $containerFailed++
                             $downloadSummary.FailedDownloads++
-                            $downloadSummary.Errors += "Failed to download $($blob.Name) from container $($container.name) - all methods failed"
+                            $errorDetail = "Failed to download $($blob.Name) from container $($container.name) - all auth methods failed"
+                            if ($permissionError) {
+                                $errorDetail += " (permission denied)"
+                            }
+                            $downloadSummary.Errors += $errorDetail
                             
                             # For blind downloads, only show permission errors, not file-not-found errors
                             if ($isBlindDownload) {
@@ -3543,7 +3572,9 @@ Downloaded: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
                                 }
                                 # Silent for file-not-found cases (expected in blind downloads)
                             } else {
-                                Write-Host "        FAILED: $($blob.Name) - download failed" -ForegroundColor Red
+                                $failureReason = if ($permissionError) { "permission denied" } else { "authentication failed" }
+                                Write-Host "        FAILED: $($blob.Name) - download failed ($failureReason)" -ForegroundColor Red
+                                Write-Debug "        All authentication methods failed for $($blob.Name). Available methods were tried in order: Az.Storage-Context, StorageKey-API, AzureCLI, BearerToken"
                             }
                         }
                         
@@ -8214,9 +8245,9 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                     
                                     # Display container information and stats
                                     if ($detailedStorageInfo -and $detailedStorageInfo.Containers) {
-                                        $totalContainers = $detailedStorageInfo.Containers.Count
-                                        $accessibleContainers = ($detailedStorageInfo.Containers | Where-Object { $_.Blobs -and $_.Blobs.Count -gt 0 -and $_.Blobs[0] -is [hashtable] }).Count
-                                        $failedEnumerationContainers = ($detailedStorageInfo.Containers | Where-Object { $_.Blobs -and $_.Blobs.Count -gt 0 -and $_.Blobs[0] -is [string] }).Count
+                                        $totalContainers = @($detailedStorageInfo.Containers).Count
+                                        $accessibleContainers = @($detailedStorageInfo.Containers | Where-Object { $_.Blobs -and $_.Blobs.Count -gt 0 -and $_.Blobs[0] -is [hashtable] }).Count
+                                        $failedEnumerationContainers = @($detailedStorageInfo.Containers | Where-Object { $_.Blobs -and $_.Blobs.Count -gt 0 -and $_.Blobs[0] -is [string] }).Count
                                         $totalBlobs = 0
                                         $containerNames = @()
                                         
