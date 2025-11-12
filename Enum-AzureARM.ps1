@@ -2592,6 +2592,7 @@ function Get-StorageAccountDetails {
             AccessKeys = @()
             NetworkRules = $null
             BlobServiceProperties = $null
+            StorageContext = $null
             Error = $null
         }
         
@@ -2877,6 +2878,9 @@ function Get-StorageAccountDetails {
                     $ctx = $storageAccount.Context
                     Write-Debug "Successfully created storage context"
                     
+                    # Store the storage context for later use in downloads
+                    $storageDetails.StorageContext = $ctx
+                    
                     # Get containers using storage context
                     $containers = Get-AzStorageContainer -Context $ctx -ErrorAction Stop
                     Write-Debug "Found $($containers.Count) containers using storage context fallback for $StorageAccountName"
@@ -3149,7 +3153,10 @@ function Get-StorageAccountFiles {
         [array]$ContainerDetails,
         
         [Parameter(Mandatory=$false)]
-        [string]$AccountId = "unknown"
+        [string]$AccountId = "unknown",
+        
+        [Parameter(Mandatory=$false)]
+        [object]$StorageContext = $null
     )
     
     try {
@@ -3357,17 +3364,25 @@ function Get-StorageAccountFiles {
                             }
                         }
                         
-                        # Method 3: Try using Az.Storage module if available
+                        # Method 3: Try using Az.Storage module with established storage context
                         if (-not $downloadSuccess) {
                             try {
                                 if (Get-Module -ListAvailable Az.Storage -ErrorAction SilentlyContinue) {
                                     Import-Module Az.Storage -ErrorAction SilentlyContinue
                                     
-                                    $storageContext = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount -ErrorAction SilentlyContinue
-                                    if ($storageContext) {
-                                        Get-AzStorageBlobContent -Blob $blob.Name -Container $container.name -Destination $localFilePath -Context $storageContext -Force -ErrorAction Stop
+                                    # Use the passed storage context if available, otherwise try to create one
+                                    $contextToUse = $StorageContext
+                                    if (-not $contextToUse) {
+                                        Write-Debug "      No storage context provided, attempting to create one"
+                                        $contextToUse = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount -ErrorAction SilentlyContinue
+                                    } else {
+                                        Write-Debug "      Using provided storage context for download"
+                                    }
+                                    
+                                    if ($contextToUse) {
+                                        Get-AzStorageBlobContent -Blob $blob.Name -Container $container.name -Destination $localFilePath -Context $contextToUse -Force -ErrorAction Stop
                                         $downloadSuccess = $true
-                                        Write-Debug "      Downloaded $($blob.Name) using Az.Storage module"
+                                        Write-Debug "      Downloaded $($blob.Name) using Az.Storage module with context"
                                     }
                                 }
                             } catch {
@@ -8163,7 +8178,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                             }
                                         }
                                         
-                                        $downloadResult = Get-StorageAccountFiles -StorageAccountName $r.name -StorageAccountKey $detailedStorageInfo.StorageAccountKey -ContainerDetails $containersToProcess -AccountId $script:currentUser
+                                        $downloadResult = Get-StorageAccountFiles -StorageAccountName $r.name -StorageAccountKey $detailedStorageInfo.StorageAccountKey -ContainerDetails $containersToProcess -AccountId $script:currentUser -StorageContext $detailedStorageInfo.StorageContext
                                         
                                         # Add download summary to detailed info
                                         $detailedStorageInfo | Add-Member -NotePropertyName "FileDownloadSummary" -NotePropertyValue $downloadResult -Force
