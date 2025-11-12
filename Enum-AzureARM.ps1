@@ -8704,18 +8704,47 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     if ($ownedObjects -and -not $ownedObjects.Error) {
                         $output.OwnedObjects = $ownedObjects
                         Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
+                        
+                        # Show details for owned applications (highest priority for privilege escalation)
                         if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
                             Write-Output "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
                             Write-Output "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
+                            foreach ($app in $ownedObjects.Applications) {
+                                Write-Output "        Application: $($app.displayName) (ID: $($app.id), AppId: $($app.appId))"
+                            }
                         }
+                        
+                        # Show details for owned service principals
                         if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
                             Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
+                            foreach ($sp in $ownedObjects.ServicePrincipals) {
+                                Write-Output "        Service Principal: $($sp.displayName) (ID: $($sp.id), AppId: $($sp.appId))"
+                            }
                         }
+                        
+                        # Show details for owned groups
                         if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
                             Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
+                            foreach ($group in $ownedObjects.Groups) {
+                                Write-Output "        Group: $($group.displayName) (ID: $($group.id), Type: $($group.groupTypes -join ', '))"
+                            }
                         }
+                        
+                        # Show details for owned devices
                         if ($ownedObjects.Analysis.OwnedDevices -gt 0) {
                             Write-Output "    Owned Devices: $($ownedObjects.Analysis.OwnedDevices)"
+                            foreach ($device in $ownedObjects.Devices) {
+                                Write-Output "        Device: $($device.displayName) (ID: $($device.id), OS: $($device.operatingSystem))"
+                            }
+                        }
+                        
+                        # Show details for other owned objects
+                        if ($ownedObjects.Analysis.OtherOwnedObjects -gt 0) {
+                            Write-Output "    Other Owned Objects: $($ownedObjects.Analysis.OtherOwnedObjects)"
+                            foreach ($other in $ownedObjects.Others) {
+                                $objectType = $other.'@odata.type' -replace '#microsoft\.graph\.', ''
+                                Write-Output "        $objectType: $($other.displayName) (ID: $($other.id))"
+                            }
                         }
                     } else {
                         Write-Output "    No owned objects found or access denied"
