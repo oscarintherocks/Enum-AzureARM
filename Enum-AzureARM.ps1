@@ -2880,6 +2880,8 @@ function Get-StorageAccountDetails {
                     
                     # Store the storage context for later use in downloads
                     $storageDetails.StorageContext = $ctx
+                    Write-Debug "Successfully created and stored storage context for $StorageAccountName"
+                    Write-Output "  Storage context created successfully for blob downloads"
                     
                     # Get containers using storage context
                     $containers = Get-AzStorageContainer -Context $ctx -ErrorAction Stop
@@ -3161,6 +3163,33 @@ function Get-StorageAccountFiles {
     
     try {
         Write-Output "  Initiating comprehensive file download for Storage Account: $StorageAccountName"
+        Write-Output "  Processing $(@($ContainerDetails).Count) containers for file downloads..."
+        
+        # Show container summary for debugging
+        $normalContainers = @($ContainerDetails | Where-Object { $_.Blobs -and $_.Blobs.Count -gt 0 -and $_.Blobs[0] -isnot [string] })
+        $blindDownloadContainers = @($ContainerDetails | Where-Object { $_.Error -and $_.Error -like "*blind download*" })
+        $emptyContainers = @($ContainerDetails | Where-Object { (-not $_.Blobs -or $_.Blobs.Count -eq 0) -and (-not ($_.Error -and $_.Error -like "*blind download*")) })
+        
+        Write-Output "    Container Analysis:"
+        Write-Output "      Normal containers with enumerated blobs: $($normalContainers.Count)"
+        Write-Output "      Containers requiring blind download: $($blindDownloadContainers.Count)"  
+        Write-Output "      Empty/inaccessible containers (will be skipped): $($emptyContainers.Count)"
+        
+        # Show available authentication methods
+        $hasStorageKey = $StorageAccountKey -ne $null -and $StorageAccountKey -ne ""
+        $hasStorageContext = $StorageContext -ne $null
+        $hasAccessToken = $script:accessToken -ne $null -and $script:accessToken -ne ""
+        $hasAzureCLI = $false
+        try {
+            $azAccount = az account show 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+            $hasAzureCLI = $azAccount -ne $null
+        } catch { }
+        
+        Write-Output "    Available Authentication Methods:"
+        Write-Output "      Storage Context: $(if ($hasStorageContext) { 'Available' } else { 'Not Available' })"
+        Write-Output "      Storage Account Key: $(if ($hasStorageKey) { 'Available' } else { 'Not Available' })"
+        Write-Output "      Azure CLI Login: $(if ($hasAzureCLI) { 'Available' } else { 'Not Available' })"
+        Write-Output "      Bearer Token: $(if ($hasAccessToken) { 'Available' } else { 'Not Available' })"
         
         # Note: Account identifier handling moved to individual file processing for better organization
         
@@ -3186,16 +3215,30 @@ function Get-StorageAccountFiles {
         foreach ($container in $ContainerDetails) {
             $isBlindDownload = $false
             
-            # Check if this is a blind download attempt (no proper blob enumeration)
+            # Enhanced container processing logic - don't skip containers too aggressively
             if (-not $container.Blobs -or $container.Blobs.Count -eq 0) {
-                Write-Debug "    Skipping container $($container.name) - no accessible blobs"
-                continue
+                # If no blobs enumerated but container exists, offer blind download
+                Write-Debug "    Container $($container.name) - no blobs enumerated, checking for blind download eligibility"
+                if ($container.Error -and $container.Error -like "*blind download*") {
+                    $isBlindDownload = $true
+                    Write-Debug "    Container marked for blind download: $($container.name)"
+                } else {
+                    Write-Debug "    Skipping container $($container.name) - no accessible blobs and not marked for blind download"
+                    continue
+                }
             }
             
-            # Check if blobs are error messages (normal enumeration failure)
-            if ($container.Blobs[0] -is [string]) {
-                Write-Debug "    Skipping container $($container.name) - blob enumeration failed"
-                continue
+            # Check if blobs are error messages (enumeration failure) but still allow processing
+            if (-not $isBlindDownload -and $container.Blobs -and $container.Blobs.Count -gt 0 -and $container.Blobs[0] -is [string]) {
+                # If first blob is a string (error), check if we should do blind download
+                Write-Debug "    Container $($container.name) - blob enumeration had errors, checking for blind download option"
+                if ($container.Error -and $container.Error -like "*blind download*") {
+                    $isBlindDownload = $true
+                    Write-Debug "    Converting to blind download: $($container.name)"
+                } else {
+                    Write-Debug "    Skipping container $($container.name) - blob enumeration failed and no blind download option"
+                    continue
+                }
             }
             
             # Check if this is a blind download attempt (fake blob entry)
@@ -3323,48 +3366,12 @@ function Get-StorageAccountFiles {
                         
                         $downloadSuccess = $false
                         $permissionError = $false
+                        $authMethodUsed = "none"
                         
-                        # Method 1: Try using storage account key if available
-                        if ($StorageAccountKey -and -not $downloadSuccess) {
-                            try {
-                                $blobUri = "https://$StorageAccountName.blob.core.windows.net/$($container.name)/$($blob.Name)"
-                                $headers = Get-StorageBlobAuthHeader -StorageAccountName $StorageAccountName -StorageAccountKey $StorageAccountKey -HttpMethod "GET" -ResourcePath "/$($container.name)/$($blob.Name)"
-                                
-                                if ($headers) {
-                                    Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
-                                    $downloadSuccess = $true
-                                    Write-Debug "      Downloaded $($blob.Name) using storage key"
-                                }
-                            } catch {
-                                $errorMsg = $_.Exception.Message
-                                if ($errorMsg -match "(403|Forbidden|Unauthorized|401)") {
-                                    $permissionError = $true
-                                }
-                                Write-Debug "      Failed to download $($blob.Name) using storage key: $errorMsg"
-                            }
-                        }
+                        # Enhanced authentication method selection with better error handling
+                        Write-Debug "      Starting download for $($blob.Name) - trying multiple auth methods..."
                         
-                        # Method 2: Try using Azure CLI if available
-                        if (-not $downloadSuccess) {
-                            try {
-                                $azAccount = az account show 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
-                                if ($azAccount) {
-                                    az storage blob download --account-name $StorageAccountName --container-name $container.name --name $blob.Name --file $localFilePath --auth-mode login 2>$null
-                                    if ($LASTEXITCODE -eq 0 -and (Test-Path $localFilePath)) {
-                                        $downloadSuccess = $true
-                                        Write-Debug "      Downloaded $($blob.Name) using Azure CLI"
-                                    }
-                                }
-                            } catch {
-                                $errorMsg = $_.Exception.Message
-                                if ($errorMsg -match "(403|Forbidden|Unauthorized|401)") {
-                                    $permissionError = $true
-                                }
-                                Write-Debug "      Failed to download $($blob.Name) using Azure CLI: $errorMsg"
-                            }
-                        }
-                        
-                        # Method 3: Try using Az.Storage module with established storage context
+                        # Method 1: Try using Az.Storage module with established storage context (BEST METHOD)
                         if (-not $downloadSuccess) {
                             try {
                                 if (Get-Module -ListAvailable Az.Storage -ErrorAction SilentlyContinue) {
@@ -3372,8 +3379,11 @@ function Get-StorageAccountFiles {
                                     
                                     # Use the passed storage context if available, otherwise try to create one
                                     $contextToUse = $StorageContext
-                                    if (-not $contextToUse) {
-                                        Write-Debug "      No storage context provided, attempting to create one"
+                                    if (-not $contextToUse -and $StorageAccountKey) {
+                                        Write-Debug "      No storage context provided, attempting to create one with storage key"
+                                        $contextToUse = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $StorageAccountKey -ErrorAction SilentlyContinue
+                                    } elseif (-not $contextToUse) {
+                                        Write-Debug "      No storage context or key available, attempting connected account context"
                                         $contextToUse = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount -ErrorAction SilentlyContinue
                                     } else {
                                         Write-Debug "      Using provided storage context for download"
@@ -3382,7 +3392,10 @@ function Get-StorageAccountFiles {
                                     if ($contextToUse) {
                                         Get-AzStorageBlobContent -Blob $blob.Name -Container $container.name -Destination $localFilePath -Context $contextToUse -Force -ErrorAction Stop
                                         $downloadSuccess = $true
+                                        $authMethodUsed = "Az.Storage-Context"
                                         Write-Debug "      Downloaded $($blob.Name) using Az.Storage module with context"
+                                    } else {
+                                        Write-Debug "      Failed to create storage context for Az.Storage method"
                                     }
                                 }
                             } catch {
@@ -3391,6 +3404,58 @@ function Get-StorageAccountFiles {
                                     $permissionError = $true
                                 }
                                 Write-Debug "      Failed to download $($blob.Name) using Az.Storage: $errorMsg"
+                            }
+                        }
+                        
+                        # Method 2: Try using storage account key with direct API call
+                        if ($StorageAccountKey -and -not $downloadSuccess) {
+                            try {
+                                $blobUri = "https://$StorageAccountName.blob.core.windows.net/$($container.name)/$($blob.Name)"
+                                $headers = Get-StorageBlobAuthHeader -StorageAccountName $StorageAccountName -StorageAccountKey $StorageAccountKey -HttpMethod "GET" -ResourcePath "/$($container.name)/$($blob.Name)"
+                                
+                                if ($headers) {
+                                    Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
+                                    $downloadSuccess = $true
+                                    $authMethodUsed = "StorageKey-API"
+                                    Write-Debug "      Downloaded $($blob.Name) using storage key API"
+                                }
+                            } catch {
+                                $errorMsg = $_.Exception.Message
+                                if ($errorMsg -match "(403|Forbidden|Unauthorized|401)") {
+                                    $permissionError = $true
+                                }
+                                Write-Debug "      Failed to download $($blob.Name) using storage key API: $errorMsg"
+                            }
+                        }
+                        
+                        # Method 3: Try using Azure CLI if available
+                        if (-not $downloadSuccess) {
+                            try {
+                                $azAccount = az account show 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+                                if ($azAccount) {
+                                    # Create temp file to capture CLI output
+                                    $tempErrorFile = [System.IO.Path]::GetTempFileName()
+                                    az storage blob download --account-name $StorageAccountName --container-name $container.name --name $blob.Name --file $localFilePath --auth-mode login 2>$tempErrorFile
+                                    $cliError = if (Test-Path $tempErrorFile) { Get-Content $tempErrorFile -Raw } else { "" }
+                                    Remove-Item $tempErrorFile -ErrorAction SilentlyContinue
+                                    
+                                    if ($LASTEXITCODE -eq 0 -and (Test-Path $localFilePath) -and (Get-Item $localFilePath).Length -gt 0) {
+                                        $downloadSuccess = $true
+                                        $authMethodUsed = "AzureCLI"
+                                        Write-Debug "      Downloaded $($blob.Name) using Azure CLI"
+                                    } else {
+                                        Write-Debug "      Azure CLI download failed: Exit code $LASTEXITCODE, Error: $cliError"
+                                        if ($cliError -match "(403|Forbidden|Unauthorized|401)") {
+                                            $permissionError = $true
+                                        }
+                                    }
+                                }
+                            } catch {
+                                $errorMsg = $_.Exception.Message
+                                if ($errorMsg -match "(403|Forbidden|Unauthorized|401)") {
+                                    $permissionError = $true
+                                }
+                                Write-Debug "      Failed to download $($blob.Name) using Azure CLI: $errorMsg"
                             }
                         }
                         
@@ -3405,6 +3470,7 @@ function Get-StorageAccountFiles {
                                 
                                 Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
                                 $downloadSuccess = $true
+                                $authMethodUsed = "BearerToken"
                                 Write-Debug "      Downloaded $($blob.Name) using bearer token"
                             } catch {
                                 $errorMsg = $_.Exception.Message
@@ -3416,14 +3482,31 @@ function Get-StorageAccountFiles {
                         }
                         
                         if ($downloadSuccess) {
-                            $containerSuccess++
-                            $downloadSummary.SuccessfulDownloads++
-                            
-                            if ($isBlindDownload) {
-                                $downloadSummary.BlindDownloadSuccesses++
-                                Write-Host "        SUCCESS: $($blob.Name) downloaded successfully" -ForegroundColor Green
+                            # Validate that file was actually downloaded and has content
+                            if (Test-Path $localFilePath) {
+                                $fileInfo = Get-Item $localFilePath
+                                if ($fileInfo.Length -eq 0 -and -not $isBlindDownload) {
+                                    Write-Debug "      Downloaded file $($blob.Name) is empty - this may be normal"
+                                }
+                                
+                                $containerSuccess++
+                                $downloadSummary.SuccessfulDownloads++
+                                
+                                $fileSizeText = if ($fileInfo.Length -gt 0) { " ($($fileInfo.Length) bytes)" } else { " (empty file)" }
+                                
+                                if ($isBlindDownload) {
+                                    $downloadSummary.BlindDownloadSuccesses++
+                                    Write-Host "        SUCCESS: $($blob.Name) downloaded successfully (via $authMethodUsed)$fileSizeText" -ForegroundColor Green
+                                } else {
+                                    Write-Host "        SUCCESS: $($blob.Name) downloaded successfully (via $authMethodUsed)$fileSizeText" -ForegroundColor Green
+                                }
                             } else {
-                                Write-Host "        SUCCESS: $($blob.Name) downloaded successfully" -ForegroundColor Green
+                                # Download method claimed success but file doesn't exist
+                                Write-Debug "      Download method claimed success but file not found: $localFilePath"
+                                $downloadSuccess = $false
+                                $containerFailed++
+                                $downloadSummary.FailedDownloads++
+                                Write-Host "        FAILED: $($blob.Name) - download method reported success but file not created" -ForegroundColor Red
                             }
                             
                             # Add metadata file with blob information
