@@ -6132,18 +6132,18 @@ function Get-OwnedObjectsViaGraph {
             
             # Debug: Show categorization results
             Write-Verbose "DEBUG: Categorization results:"
-            Write-Verbose "  Applications: $($applications.Count) objects"
-            Write-Verbose "  Service Principals: $($servicePrincipals.Count) objects"
-            Write-Verbose "  Groups: $($groups.Count) objects"
-            Write-Verbose "  Devices: $($devices.Count) objects"
-            Write-Verbose "  Others: $($others.Count) objects"
+            Write-Verbose "  Applications: $(@($applications).Count) objects"
+            Write-Verbose "  Service Principals: $(@($servicePrincipals).Count) objects"
+            Write-Verbose "  Groups: $(@($groups).Count) objects"
+            Write-Verbose "  Devices: $(@($devices).Count) objects"
+            Write-Verbose "  Others: $(@($others).Count) objects"
             
-            # Create analysis summary with null-safe counting
-            $appCount = if ($applications) { $applications.Count } else { 0 }
-            $spCount = if ($servicePrincipals) { $servicePrincipals.Count } else { 0 }
-            $groupCount = if ($groups) { $groups.Count } else { 0 }
-            $deviceCount = if ($devices) { $devices.Count } else { 0 }
-            $otherCount = if ($others) { $others.Count } else { 0 }
+            # Create analysis summary with robust counting (handles single objects and arrays)
+            $appCount = if ($applications) { @($applications).Count } else { 0 }
+            $spCount = if ($servicePrincipals) { @($servicePrincipals).Count } else { 0 }
+            $groupCount = if ($groups) { @($groups).Count } else { 0 }
+            $deviceCount = if ($devices) { @($devices).Count } else { 0 }
+            $otherCount = if ($others) { @($others).Count } else { 0 }
             
             $analysis = @{
                 TotalOwnedObjects = $allOwnedObjects.Count
@@ -6155,7 +6155,7 @@ function Get-OwnedObjectsViaGraph {
                 PrivilegeEscalationOpportunities = $appCount # Applications are key for privilege escalation
             }
             
-            Write-Verbose "Found $($allOwnedObjects.Count) owned objects via Graph API: $appCount apps, $spCount SPs, $groupCount groups"
+            Write-Verbose "Found $(@($allOwnedObjects).Count) owned objects via Graph API: $appCount apps, $spCount SPs, $groupCount groups"
             
             return @{
                 OwnedObjects = $allOwnedObjects
