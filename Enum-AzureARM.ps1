@@ -6117,6 +6117,12 @@ function Get-OwnedObjectsViaGraph {
         } while ($nextLink)
         
         if ($allOwnedObjects) {
+            # Debug: Show what object types we actually received
+            Write-Verbose "DEBUG: Raw owned objects received:"
+            foreach ($obj in $allOwnedObjects) {
+                Write-Verbose "  Object: $($obj.displayName), Type: $($obj.'@odata.type'), ID: $($obj.id)"
+            }
+            
             # Categorize owned objects by type
             $applications = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.application' }
             $servicePrincipals = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.servicePrincipal' }
@@ -6124,18 +6130,32 @@ function Get-OwnedObjectsViaGraph {
             $devices = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.device' }
             $others = $allOwnedObjects | Where-Object { $_.'@odata.type' -notin @('#microsoft.graph.application', '#microsoft.graph.servicePrincipal', '#microsoft.graph.group', '#microsoft.graph.device') }
             
-            # Create analysis summary
+            # Debug: Show categorization results
+            Write-Verbose "DEBUG: Categorization results:"
+            Write-Verbose "  Applications: $($applications.Count) objects"
+            Write-Verbose "  Service Principals: $($servicePrincipals.Count) objects"
+            Write-Verbose "  Groups: $($groups.Count) objects"
+            Write-Verbose "  Devices: $($devices.Count) objects"
+            Write-Verbose "  Others: $($others.Count) objects"
+            
+            # Create analysis summary with null-safe counting
+            $appCount = if ($applications) { $applications.Count } else { 0 }
+            $spCount = if ($servicePrincipals) { $servicePrincipals.Count } else { 0 }
+            $groupCount = if ($groups) { $groups.Count } else { 0 }
+            $deviceCount = if ($devices) { $devices.Count } else { 0 }
+            $otherCount = if ($others) { $others.Count } else { 0 }
+            
             $analysis = @{
                 TotalOwnedObjects = $allOwnedObjects.Count
-                OwnedApplications = $applications.Count
-                OwnedServicePrincipals = $servicePrincipals.Count
-                OwnedGroups = $groups.Count
-                OwnedDevices = $devices.Count
-                OtherOwnedObjects = $others.Count
-                PrivilegeEscalationOpportunities = $applications.Count # Applications are key for privilege escalation
+                OwnedApplications = $appCount
+                OwnedServicePrincipals = $spCount
+                OwnedGroups = $groupCount
+                OwnedDevices = $deviceCount
+                OtherOwnedObjects = $otherCount
+                PrivilegeEscalationOpportunities = $appCount # Applications are key for privilege escalation
             }
             
-            Write-Verbose "Found $($allOwnedObjects.Count) owned objects via Graph API: $($applications.Count) apps, $($servicePrincipals.Count) SPs, $($groups.Count) groups"
+            Write-Verbose "Found $($allOwnedObjects.Count) owned objects via Graph API: $appCount apps, $spCount SPs, $groupCount groups"
             
             return @{
                 OwnedObjects = $allOwnedObjects
