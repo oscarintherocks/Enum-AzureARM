@@ -6080,6 +6080,90 @@ function Get-OwnedObjectsViaCLI {
     }
 }
 
+function Get-OwnedObjectsViaGraph {
+    <#
+    .SYNOPSIS
+        Retrieves objects owned by the current signed-in user using Graph API directly.
+    .DESCRIPTION
+        Uses Graph API '/me/ownedObjects' endpoint to get all objects owned by the current user.
+        This provides the same functionality as Azure CLI but using the Graph token directly.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$AccessToken
+    )
+    
+    try {
+        Write-Verbose "Retrieving objects owned by current user via Graph API..."
+        
+        # Set up headers for Graph API call
+        $headers = @{
+            'Authorization' = "Bearer $AccessToken"
+            'Content-Type' = 'application/json'
+        }
+        
+        # Get owned objects using Graph API
+        $allOwnedObjects = @()
+        $nextLink = "https://graph.microsoft.com/v1.0/me/ownedObjects"
+        
+        do {
+            $response = Invoke-RestMethod -Uri $nextLink -Headers $headers -Method GET
+            
+            if ($response.value) {
+                $allOwnedObjects += $response.value
+            }
+            
+            $nextLink = $response.'@odata.nextLink'
+        } while ($nextLink)
+        
+        if ($allOwnedObjects) {
+            # Categorize owned objects by type
+            $applications = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.application' }
+            $servicePrincipals = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.servicePrincipal' }
+            $groups = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.group' }
+            $devices = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.device' }
+            $others = $allOwnedObjects | Where-Object { $_.'@odata.type' -notin @('#microsoft.graph.application', '#microsoft.graph.servicePrincipal', '#microsoft.graph.group', '#microsoft.graph.device') }
+            
+            # Create analysis summary
+            $analysis = @{
+                TotalOwnedObjects = $allOwnedObjects.Count
+                OwnedApplications = $applications.Count
+                OwnedServicePrincipals = $servicePrincipals.Count
+                OwnedGroups = $groups.Count
+                OwnedDevices = $devices.Count
+                OtherOwnedObjects = $others.Count
+                PrivilegeEscalationOpportunities = $applications.Count # Applications are key for privilege escalation
+            }
+            
+            Write-Verbose "Found $($allOwnedObjects.Count) owned objects via Graph API: $($applications.Count) apps, $($servicePrincipals.Count) SPs, $($groups.Count) groups"
+            
+            return @{
+                OwnedObjects = $allOwnedObjects
+                Applications = $applications
+                ServicePrincipals = $servicePrincipals
+                Groups = $groups
+                Devices = $devices
+                Others = $others
+                Analysis = $analysis
+                Error = $null
+            }
+        } else {
+            return @{ 
+                OwnedObjects = @()
+                Applications = @()
+                ServicePrincipals = @()
+                Groups = @()
+                Devices = @()
+                Others = @()
+                Analysis = @{ TotalOwnedObjects = 0; OwnedApplications = 0; OwnedServicePrincipals = 0; OwnedGroups = 0; OwnedDevices = 0; OtherOwnedObjects = 0; PrivilegeEscalationOpportunities = 0 }
+                Error = $null
+            }
+        }
+    } catch {
+        return @{ Error = "Failed to retrieve owned objects via Graph API: $($_.Exception.Message)" }
+    }
+}
+
 function Test-ApplicationOwnership {
     <#
     .SYNOPSIS
@@ -8614,22 +8698,38 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                         }
                     }
                     
+                    # Get owned objects first (critical for privilege escalation detection)
+                    Write-Output "  Retrieving owned objects..."
+                    $ownedObjects = Get-OwnedObjectsViaGraph -AccessToken $AccessTokenGraph
+                    if ($ownedObjects -and -not $ownedObjects.Error) {
+                        $output.OwnedObjects = $ownedObjects
+                        Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
+                        if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
+                            Write-Output "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
+                            Write-Output "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
+                        }
+                        if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
+                            Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
+                        }
+                        if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
+                            Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
+                        }
+                        if ($ownedObjects.Analysis.OwnedDevices -gt 0) {
+                            Write-Output "    Owned Devices: $($ownedObjects.Analysis.OwnedDevices)"
+                        }
+                    } else {
+                        Write-Output "    No owned objects found or access denied"
+                    }
+
                     # Get all applications (if permitted)
                     if ($graphPermissions.CanReadApplications) {
                         Write-Output "  Retrieving all tenant applications..."
                         
-                        # Get owned applications first if CLI is available
+                        # Use owned applications for highlighting
                         $ownedApplications = @()
-                        if ($Script:AuthenticationStatus.AzureCLI) {
-                            try {
-                                $ownedObjects = Get-OwnedObjectsViaCLI
-                                if ($ownedObjects -and -not $ownedObjects.Error -and $ownedObjects.Applications) {
-                                    $ownedApplications = $ownedObjects.Applications
-                                    Write-Verbose "Found $($ownedApplications.Count) owned applications for highlighting"
-                                }
-                            } catch {
-                                Write-Verbose "Could not retrieve owned objects for application marking: $($_.Exception.Message)"
-                            }
+                        if ($ownedObjects -and -not $ownedObjects.Error -and $ownedObjects.Applications) {
+                            $ownedApplications = $ownedObjects.Applications
+                            Write-Verbose "Found $($ownedApplications.Count) owned applications for highlighting"
                         }
                         
                         $allApplications = Get-TenantApplications -OwnedApplications $ownedApplications
@@ -8753,40 +8853,6 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
         Write-Output "Enhanced Azure AD enumeration completed (limited to Graph API scope)"
     }
 
-    # Check for owned objects via Azure CLI (even if not fully CLI authenticated)
-    # This is critical for privilege escalation opportunities
-    if (-not $Script:AuthenticationStatus.AzureCLI) {
-        Write-Output ""
-        Write-Output "  Checking for owned objects via Azure CLI..."
-        try {
-            # Test if Azure CLI can list owned objects (independent of full authentication)
-            $testResult = Invoke-Expression "az ad signed-in-user list-owned-objects --output json" 2>&1
-            if ($LASTEXITCODE -eq 0 -and $null -ne $testResult) {
-                Write-Output "  Retrieving owned objects via CLI..."
-                $ownedObjects = Get-OwnedObjectsViaCLI
-                if ($ownedObjects -and -not $ownedObjects.Error) {
-                    $output.OwnedObjects = $ownedObjects
-                    Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
-                    if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
-                        Write-Output "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
-                        Write-Output "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
-                    }
-                    if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
-                        Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
-                    }
-                    if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
-                        Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
-                    }
-                } else {
-                    Write-Output "    No owned objects found or access denied"
-                }
-            } else {
-                Write-Output "    Azure CLI owned objects check failed: Not authenticated or insufficient permissions"
-            }
-        } catch {
-            Write-Output "    Azure CLI owned objects check failed: $($_.Exception.Message)"
-        }
-    }
 
 } else {
     Write-Output "ARM checks not requested - skipping Azure resource enumeration"
