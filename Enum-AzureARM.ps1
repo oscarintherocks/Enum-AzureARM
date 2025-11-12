@@ -2856,6 +2856,81 @@ function Get-StorageAccountDetails {
                     
                     $storageDetails.Containers += $containerDetail
                 }
+            } else {
+                # ARM API succeeded but returned no containers - try PowerShell fallback
+                Write-Output "  ARM API returned no containers - attempting PowerShell fallback method..."
+                Write-Debug "containersResponse exists: $($containersResponse -ne $null), has value: $($containersResponse.value -ne $null)"
+                
+                # Fallback: Try using Get-AzStorageContainer with storage account context
+                try {
+                    # Extract resource group name from storage account ID
+                    # Format: /subscriptions/{subscription}/resourceGroups/{resourceGroup}/providers/Microsoft.Storage/storageAccounts/{name}
+                    $resourceGroupName = ($StorageAccountId -split '/')[4]
+                    Write-Debug "Storage Account ID: $StorageAccountId"
+                    Write-Debug "Extracted resource group name: $resourceGroupName"
+                    Write-Output "  Resource Group: $resourceGroupName (extracted from storage account ID)"
+                    
+                    # Create storage account context
+                    Write-Debug "Attempting to get storage account: $StorageAccountName in resource group: $resourceGroupName"
+                    $storageAccount = Get-AzStorageAccount -ResourceGroupName $resourceGroupName -Name $StorageAccountName -ErrorAction Stop
+                    Write-Debug "Successfully retrieved storage account object"
+                    $ctx = $storageAccount.Context
+                    Write-Debug "Successfully created storage context"
+                    
+                    # Get containers using storage context
+                    $containers = Get-AzStorageContainer -Context $ctx -ErrorAction Stop
+                    Write-Debug "Found $($containers.Count) containers using storage context fallback for $StorageAccountName"
+                    Write-Output "  Successfully found $($containers.Count) containers using PowerShell fallback method"
+                    
+                    foreach ($container in $containers) {
+                        $containerDetail = @{
+                            Name = $container.Name
+                            PublicAccess = $container.PublicAccess
+                            LastModified = $container.LastModified
+                            LeaseStatus = "Unknown"
+                            HasImmutabilityPolicy = $false
+                            HasLegalHold = $false
+                            Blobs = @()
+                            BlobCount = 0
+                            Error = $null
+                        }
+                        
+                        # Try to enumerate blobs in this container
+                        try {
+                            Write-Debug "Enumerating blobs in container: $($container.Name)"
+                            $blobs = Get-AzStorageBlob -Container $container.Name -Context $ctx -ErrorAction Stop
+                            
+                            foreach ($blob in $blobs) {
+                                $blobDetail = @{
+                                    Name = $blob.Name
+                                    Size = $blob.Length
+                                    LastModified = $blob.LastModified
+                                    ContentType = $blob.BlobType
+                                    ETag = $blob.ETag
+                                    BlobType = $blob.BlobType
+                                }
+                                $containerDetail.Blobs += $blobDetail
+                            }
+                            $containerDetail.BlobCount = $blobs.Count
+                            Write-Debug "Successfully enumerated $($blobs.Count) blobs in container: $($container.Name)"
+                            Write-Output "    Container '$($container.Name)': Found $($blobs.Count) blobs"
+                        } catch {
+                            Write-Debug "Failed to enumerate blobs in container $($container.Name): $($_.Exception.Message)"
+                            Write-Output "    Container '$($container.Name)': Blob enumeration failed - $($_.Exception.Message)"
+                            $containerDetail.Error = "Could not enumerate blobs: $($_.Exception.Message)"
+                        }
+                        
+                        $storageDetails.Containers += $containerDetail
+                    }
+                    
+                    # Clear any previous error since fallback succeeded
+                    $storageDetails.Error = $null
+                    
+                } catch {
+                    Write-Debug "PowerShell fallback container enumeration also failed for $StorageAccountName : $($_.Exception.Message)"
+                    Write-Output "  PowerShell fallback method also failed: $($_.Exception.Message)"
+                    $storageDetails.Error = "Could not retrieve containers via ARM API or PowerShell: $($_.Exception.Message)"
+                }
             }
         } catch {
             Write-Debug "Could not retrieve containers via ARM API for $StorageAccountName : $($_.Exception.Message)"
@@ -8028,10 +8103,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                 # Update countdown display if changed
                                                 if ($remaining -ne $lastCountdown -and $remaining -ge 0) {
                                                     if ($lastCountdown -ne -1) {
-                                                        # Clear previous countdown
-                                                        Write-Host ("`b" * 20) -NoNewline
-                                                        Write-Host (" " * 20) -NoNewline
-                                                        Write-Host ("`b" * 20) -NoNewline
+                                                        # Move cursor back and clear the line properly
+                                                        $pos = $Host.UI.RawUI.CursorPosition
+                                                        $pos.X = 0
+                                                        $Host.UI.RawUI.CursorPosition = $pos
+                                                        Write-Host "    Do you want to proceed with blind download enumeration? (y/N) " -ForegroundColor Cyan -NoNewline
                                                     }
                                                     Write-Host "($remaining seconds) " -ForegroundColor Yellow -NoNewline
                                                     $lastCountdown = $remaining
@@ -8050,10 +8126,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                             Write-Host "`b `b" -NoNewline
                                                         }
                                                     } elseif ($key.Character -match '[ynYN]') {
-                                                        # Clear countdown first
-                                                        Write-Host ("`b" * 20) -NoNewline
-                                                        Write-Host (" " * 20) -NoNewline
-                                                        Write-Host ("`b" * 20) -NoNewline
+                                                        # Clear countdown and show user input
+                                                        $pos = $Host.UI.RawUI.CursorPosition
+                                                        $pos.X = 0
+                                                        $Host.UI.RawUI.CursorPosition = $pos
+                                                        Write-Host "    Do you want to proceed with blind download enumeration? (y/N) " -ForegroundColor Cyan -NoNewline
                                                         
                                                         $inputBuffer = $key.Character
                                                         Write-Host $key.Character -NoNewline
@@ -8065,9 +8142,10 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                             
                                             if (-not $userInput) {
                                                 # Clear countdown and show timeout message
-                                                Write-Host ("`b" * 20) -NoNewline
-                                                Write-Host (" " * 20) -NoNewline
-                                                Write-Host ("`b" * 20) -NoNewline
+                                                $pos = $Host.UI.RawUI.CursorPosition
+                                                $pos.X = 0
+                                                $Host.UI.RawUI.CursorPosition = $pos
+                                                Write-Host "    Do you want to proceed with blind download enumeration? (y/N) " -ForegroundColor Cyan -NoNewline
                                                 Write-Host "N (timeout - defaulting to NO)" -ForegroundColor Red
                                             } else {
                                                 Write-Host ""
