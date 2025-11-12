@@ -2,8 +2,16 @@
 .SYNOPSIS
     Azure ARM/Graph enumeration with selective token support
 .DESCRIPTION
-    Enumerate Azure resources and/or Azure AD objects based on provided tokens.
+    Enumerate Azure resources and/or Azure AD objects based on provided tokens or service principal credentials.
     When OutputFile is not specified, generates dynamic filename: accountid_YYYYMMDDHHMMSS_AzureResources.json
+    
+    Supports multiple authentication methods:
+    1. Current user context (-UseCurrentUser)
+    2. Access tokens (-AccessTokenARM and/or -AccessTokenGraph with -AccountId)
+    3. Azure CLI service principal (-UseAzureCLI with -ServicePrincipalId, -ServicePrincipalSecret, -TenantId)
+    4. Azure PowerShell service principal (-UseServicePrincipal with -ApplicationId, -ClientSecret, -TenantId)
+    
+    Azure PowerShell Service Principal automatically extracts ARM, Graph, and Key Vault tokens for enhanced access.
 .NOTES
     Version: 2.0 | Outputs to Results\ folder | Dynamic filenames based on account identity
 #>
@@ -46,6 +54,16 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$UseAzureCLI,
 
+    # Azure PowerShell Service Principal Authentication
+    [Parameter(Mandatory=$false)]
+    [switch]$UseServicePrincipal,
+
+    [Parameter(Mandatory=$false)]
+    [string]$ApplicationId,
+
+    [Parameter(Mandatory=$false)]
+    [string]$ClientSecret,
+
     [Parameter(Mandatory=$false)]
     [switch]$GraphOnly
 )
@@ -62,8 +80,14 @@ $Script:AuthenticationStatus = @{
     AzureCLI = $false
 }
 
+# Global variable for Service Principal authentication state
+$Script:ServicePrincipalMode = $false
+
+# Global variable for Key Vault token (optional)
+$Script:KeyVaultToken = $null
+
 # Display help if requested or if no authentication method is provided
-if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId))) {
+if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId) -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId))) {
     Write-Host "`nAzure ARM/Graph Enumeration Script v2.0`n" -ForegroundColor Cyan
     Write-Host "Authentication Methods:" -ForegroundColor Yellow
     Write-Host "  Current User:"
@@ -74,7 +98,9 @@ if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessT
     Write-Host "    .\Enum-AzureARM.ps1 -AccessTokenARM <arm> -AccessTokenGraph <graph> -AccountId <id>"
     Write-Host "  Azure CLI Service Principal:"
     Write-Host "    .\Enum-AzureARM.ps1 -UseAzureCLI -ServicePrincipalId <appid> -ServicePrincipalSecret <secret> -TenantId <tenantid>"
-    Write-Host "    .\Enum-AzureARM.ps1 -ServicePrincipalId <appid> -ServicePrincipalSecret <secret> -TenantId <tenantid>`n"
+    Write-Host "    .\Enum-AzureARM.ps1 -ServicePrincipalId <appid> -ServicePrincipalSecret <secret> -TenantId <tenantid>"
+    Write-Host "  Azure PowerShell Service Principal:"
+    Write-Host "    .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId <appid> -ClientSecret <secret> -TenantId <tenantid>`n"
     Write-Host "Options:" -ForegroundColor Gray
     Write-Host "  -OutputFormat json|csv"
     Write-Host "  -OutputFile <path>"
@@ -82,12 +108,16 @@ if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessT
     Write-Host "  -Help (this message)`n"
     
     Write-Host "Examples:" -ForegroundColor Green
-    Write-Host "  # Use service principal from discovered credentials"
+    Write-Host "  # Use Azure CLI service principal from discovered credentials"
     Write-Host "  .\Enum-AzureARM.ps1 -ServicePrincipalId 12345678-1234-1234-1234-123456789abc \" -ForegroundColor Green
     Write-Host "                       -ServicePrincipalSecret 'ABC123XyZ456DefGhi789JklMno012PqrStu' \" -ForegroundColor Green
+    Write-Host "                       -TenantId 87654321-4321-4321-4321-cba987654321" -ForegroundColor Green
+    Write-Host "  # Use Azure PowerShell service principal"
+    Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId 12345678-1234-1234-1234-123456789abc \" -ForegroundColor Green
+    Write-Host "                       -ClientSecret 'ABC123XyZ456DefGhi789JklMno012PqrStu' \" -ForegroundColor Green
     Write-Host "                       -TenantId 87654321-4321-4321-4321-cba987654321`n" -ForegroundColor Green
     
-    if (-not $Help -and -not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI) {
+    if (-not $Help -and -not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId)) {
         Write-Host "Error: No authentication method provided." -ForegroundColor Red
     }
     exit 0
@@ -117,8 +147,21 @@ function Test-AuthenticationParameters {
     Write-Verbose "Authentication mode: $authMode"
     
     # Check if using current user, token-based authentication, or service principal authentication
-    if (-not $UseCurrentUser -and [string]::IsNullOrWhiteSpace($AccessTokenARM) -and [string]::IsNullOrWhiteSpace($AccessTokenGraph) -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId)) {
-        throw "No authentication method provided. Use -UseCurrentUser or provide access tokens (-AccessTokenARM and/or -AccessTokenGraph).`n`nExample:`n  .\Enum-AzureARM.ps1 -UseCurrentUser`n  .\Enum-AzureARM.ps1 -AccessTokenARM `"your-arm-token`" -AccountId `"user@example.com`""
+    if (-not $UseCurrentUser -and [string]::IsNullOrWhiteSpace($AccessTokenARM) -and [string]::IsNullOrWhiteSpace($AccessTokenGraph) -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId) -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId)) {
+        throw "No authentication method provided. Use -UseCurrentUser, provide access tokens (-AccessTokenARM and/or -AccessTokenGraph), or use service principal authentication.`n`nExamples:`n  .\Enum-AzureARM.ps1 -UseCurrentUser`n  .\Enum-AzureARM.ps1 -AccessTokenARM `"your-arm-token`" -AccountId `"user@example.com`"`n  .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId `"app-id`" -ClientSecret `"secret`" -TenantId `"tenant-id`""
+    }
+    
+    # Validate Azure PowerShell Service Principal parameters
+    if ($UseServicePrincipal) {
+        if ([string]::IsNullOrWhiteSpace($ApplicationId)) {
+            throw "ApplicationId parameter is required when using -UseServicePrincipal. Please provide a valid Application/Client ID."
+        }
+        if ([string]::IsNullOrWhiteSpace($ClientSecret)) {
+            throw "ClientSecret parameter is required when using -UseServicePrincipal. Please provide a valid client secret."
+        }
+        if ([string]::IsNullOrWhiteSpace($TenantId)) {
+            throw "TenantId parameter is required when using -UseServicePrincipal. Please provide a valid tenant ID."
+        }
     }
     
     # Validate required parameters for different scenarios
@@ -157,6 +200,12 @@ function Test-AuthenticationParameters {
         $Script:PerformGraphChecks = $true
         $Script:UseAzureCLI = $true
         Write-Verbose "Azure CLI mode: Service principal authentication will be attempted"
+    } elseif ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId) {
+        # Azure PowerShell Service Principal mode
+        $Script:PerformARMChecks = $true
+        $Script:PerformGraphChecks = $true
+        $Script:ServicePrincipalMode = $true
+        Write-Verbose "Azure PowerShell Service Principal mode: Connect-AzAccount with service principal will be used"
     } else {
         if ($AccessTokenARM) {
             $Script:PerformARMChecks = $true
@@ -875,6 +924,12 @@ function Show-GraphPermissionGuidance {
     Write-Host "  `$token = [Microsoft.Azure.Commands.Common.Authentication.AzureSession]::Instance.AuthenticationFactory.Authenticate(`$context.Account, `$context.Environment, `$context.Tenant.Id, `$null, 'https://graph.microsoft.com/').AccessToken" -ForegroundColor White
     Write-Host ""
     
+    Write-Host "Option 2b: Azure PowerShell Service Principal (Recommended for CTF)" -ForegroundColor Cyan
+    Write-Host "  # Use discovered service principal credentials directly:" -ForegroundColor Gray
+    Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId '<APP_ID>' -ClientSecret '<SECRET>' -TenantId '<TENANT_ID>'" -ForegroundColor White
+    Write-Host "  # Automatically extracts ARM, Graph, and Key Vault tokens" -ForegroundColor Gray
+    Write-Host ""
+    
     Write-Host "Option 3: Azure CLI (Service Principal with App Permissions)" -ForegroundColor Cyan
     Write-Host "  # First, register app and grant admin consent for:" -ForegroundColor Gray
     Write-Host "  # - Directory.Read.All (Application permission)" -ForegroundColor Gray
@@ -1059,15 +1114,17 @@ function Show-EnumerationHeader {
         [string]$AuthMethod
     )
     
-    Write-Host "`n" + "="*80 -ForegroundColor Cyan
+    $separator = "=" * 80
+    Write-Host ""
+    Write-Host $separator -ForegroundColor Cyan
     Write-Host " AZURE ENUMERATION RESULTS" -ForegroundColor Cyan
-    Write-Host "="*80 -ForegroundColor Cyan
+    Write-Host $separator -ForegroundColor Cyan
     Write-Host " Subscription: $SubscriptionName" -ForegroundColor White
     Write-Host " ID: $SubscriptionId" -ForegroundColor Gray
     Write-Host " Tenant: $TenantId" -ForegroundColor Gray
     Write-Host " Authentication: $AuthMethod" -ForegroundColor Gray
     Write-Host " Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')" -ForegroundColor Gray
-    Write-Host "="*80 -ForegroundColor Cyan
+    Write-Host $separator -ForegroundColor Cyan
 }
 
 function Show-RoleAssignmentsSummary {
@@ -1082,9 +1139,11 @@ function Show-RoleAssignmentsSummary {
         return
     }
     
-    Write-Host "`n" + "-"*80 -ForegroundColor Green
+    $separator = "-" * 80
+    Write-Host ""
+    Write-Host $separator -ForegroundColor Green
     Write-Host " $Title ($($RoleAssignments.Count) assignments)" -ForegroundColor Green
-    Write-Host "-"*80 -ForegroundColor Green
+    Write-Host $separator -ForegroundColor Green
     
     # Group by role for better readability
     $groupedRoles = $RoleAssignments | Group-Object RoleDefinitionName | Sort-Object Count -Descending
@@ -1122,9 +1181,11 @@ function Show-ResourcesSummary {
         [hashtable]$Resources
     )
     
-    Write-Host "`n" + "-"*80 -ForegroundColor Magenta
+    $separator = "-" * 80
+    Write-Host ""
+    Write-Host $separator -ForegroundColor Magenta
     Write-Host " AZURE RESOURCES DISCOVERED" -ForegroundColor Magenta
-    Write-Host "-"*80 -ForegroundColor Magenta
+    Write-Host $separator -ForegroundColor Magenta
     
     # Debug: Show what Key Vault data we received
     Write-Verbose "[DEBUG] Show-ResourcesSummary called"
@@ -1246,8 +1307,9 @@ function Show-ResourcesSummary {
             }
             
             if ($allSecrets -and $allSecrets.Count -gt 0) {
+                $secretSeparator = "=" * 78
                 Write-Host "`n   SECRETS DETAILS:" -ForegroundColor Yellow
-                Write-Host "   " + ("=" * 78) -ForegroundColor Yellow
+                Write-Host "   $secretSeparator" -ForegroundColor Yellow
                 
                 foreach ($secret in $allSecrets) {
                     Write-Host "`n   VAULT: $($secret.Vault)" -ForegroundColor Cyan
@@ -1260,7 +1322,8 @@ function Show-ResourcesSummary {
                     if ($secret.'Value Retrieved' -eq "Yes") {
                         Write-Host "   VALUE PREVIEW: $($secret.'Value Preview')" -ForegroundColor Yellow
                     }
-                    Write-Host "   " + ("-" * 78) -ForegroundColor Gray
+                    $lineSeparator = "-" * 78
+                    Write-Host "   $lineSeparator" -ForegroundColor Gray
                 }
                 
                 if ($allSecrets.Count -gt 10) {
@@ -1272,13 +1335,15 @@ function Show-ResourcesSummary {
                 if ($secretsWithValues.Count -gt 0) {
                     Write-Host "`n   *** SECRETS WITH RETRIEVED VALUES ***" -ForegroundColor Red
                     Write-Host "   WARNING: The following secrets have values that were successfully retrieved:" -ForegroundColor Red
-                    Write-Host "   " + ("!" * 78) -ForegroundColor Red
+                    $warningSeparator = "!" * 78
+                    Write-Host "   $warningSeparator" -ForegroundColor Red
                     foreach ($secret in $secretsWithValues) {
                         Write-Host "`n   VAULT: $($secret.Vault)" -ForegroundColor Red
                         Write-Host "   SECRET: $($secret.'Secret Name')" -ForegroundColor Red
                         Write-Host "   PREVIEW: $($secret.'Value Preview')" -ForegroundColor Yellow
                     }
-                    Write-Host "`n   " + ("!" * 78) -ForegroundColor Red
+                    $warningSeparator = "!" * 78
+                    Write-Host "`n   $warningSeparator" -ForegroundColor Red
                     Write-Host "   Full secret values are available in the JSON output file." -ForegroundColor Yellow
                 }
             } else {
@@ -1384,9 +1449,11 @@ function Show-SecurityHighlights {
         [hashtable]$Resources
     )
     
-    Write-Host "`n" + "-"*80 -ForegroundColor Red
+    $separator = "-" * 80
+    Write-Host ""
+    Write-Host $separator -ForegroundColor Red
     Write-Host " SECURITY HIGHLIGHTS & RECOMMENDATIONS" -ForegroundColor Red
-    Write-Host "-"*80 -ForegroundColor Red
+    Write-Host $separator -ForegroundColor Red
     
     $findings = @()
     
@@ -1446,6 +1513,15 @@ function Show-SecurityHighlights {
         $findings += "APPS: $($Resources.TenantApplications.Analysis.ApplicationsWithSecrets) applications with stored secrets/certificates"
     }
     
+    # Owned objects - critical for privilege escalation
+    if ($Resources.OwnedObjects -and $Resources.OwnedObjects.Analysis.PrivilegeEscalationOpportunities -gt 0) {
+        $findings += "PRIVILEGE ESCALATION: $($Resources.OwnedObjects.Analysis.PrivilegeEscalationOpportunities) owned applications detected - you can create new secrets!"
+    }
+    
+    if ($Resources.OwnedObjects -and $Resources.OwnedObjects.Analysis.TotalOwnedObjects -gt 0) {
+        $findings += "OWNED OBJECTS: $($Resources.OwnedObjects.Analysis.TotalOwnedObjects) total objects owned by current user"
+    }
+    
     if ($Resources.TenantUsers) {
         $findings += "IDENTITY: $($Resources.TenantUsers.Users.Count) Azure AD users enumerated"
     }
@@ -1464,7 +1540,71 @@ function Show-SecurityHighlights {
         Write-Host "   - Check VM security configurations and update status" -ForegroundColor White
         Write-Host "   - Review application secrets and certificate expiration dates" -ForegroundColor White
         Write-Host "   - Validate resource group access permissions" -ForegroundColor White
+        
+        # Add privilege escalation guidance if owned applications found
+        if ($Resources.OwnedObjects -and $Resources.OwnedObjects.Analysis.PrivilegeEscalationOpportunities -gt 0) {
+            Write-Host "`nPRIVILEGE ESCALATION OPPORTUNITIES:" -ForegroundColor Red
+            Write-Host "   - You own $($Resources.OwnedObjects.Analysis.PrivilegeEscalationOpportunities) application(s) - you can create new secrets!" -ForegroundColor Yellow
+            Write-Host "   - Command: az ad app credential reset --id <APP_ID>" -ForegroundColor Cyan
+            Write-Host "   - Then use the new secret to authenticate as the application" -ForegroundColor Cyan
+            Write-Host "   - Check the application's permissions and role assignments" -ForegroundColor Cyan
+        }
     }
+}
+
+function Show-OwnedApplicationsDetails {
+    <#
+    .SYNOPSIS
+        Displays detailed information about owned applications with privilege escalation guidance.
+    #>
+    [CmdletBinding()]
+    param(
+        [array]$Applications,
+        [string]$Title = "OWNED APPLICATIONS - PRIVILEGE ESCALATION OPPORTUNITIES"
+    )
+    
+    if (-not $Applications -or $Applications.Count -eq 0) {
+        return
+    }
+    
+    $ownedApps = $Applications | Where-Object { $_.IsOwned -eq $true }
+    
+    if ($ownedApps.Count -eq 0) {
+        return
+    }
+    
+    $separator = "=" * 80
+    Write-Host ""
+    Write-Host $separator -ForegroundColor Red
+    Write-Host " $Title" -ForegroundColor Red
+    Write-Host $separator -ForegroundColor Red
+    
+    Write-Host "`nYou own $($ownedApps.Count) application(s). You can create new secrets for privilege escalation!" -ForegroundColor Yellow
+    
+    foreach ($app in $ownedApps) {
+        Write-Host "`n>>> Application: $($app.DisplayName)" -ForegroundColor Cyan
+        Write-Host "    App ID: $($app.AppId)" -ForegroundColor White
+        Write-Host "    Object ID: $($app.Id)" -ForegroundColor White
+        if ($app.HasSecrets) {
+            Write-Host "    Current Secrets: $($app.PasswordCredentials) passwords, $($app.KeyCredentials) certificates" -ForegroundColor Yellow
+        }
+        Write-Host "    Created: $($app.CreatedDateTime)" -ForegroundColor Gray
+        
+        Write-Host "`n    PRIVILEGE ESCALATION COMMANDS:" -ForegroundColor Red
+        Write-Host "    1. Create new secret: az ad app credential reset --id $($app.AppId)" -ForegroundColor Cyan
+        Write-Host "    2. Authenticate as app: az login --service-principal -u $($app.AppId) -p <NEW_SECRET> --tenant <TENANT_ID>" -ForegroundColor Cyan
+        Write-Host "    3. Check app permissions: az ad app permission list --id $($app.AppId)" -ForegroundColor Cyan
+        Write-Host "    4. Check role assignments: az role assignment list --assignee $($app.AppId)" -ForegroundColor Cyan
+    }
+    
+    Write-Host "`nIMPORTANT NOTES:" -ForegroundColor Yellow
+    Write-Host "- Creating new secrets may alert administrators" -ForegroundColor White
+    Write-Host "- Check the application's permissions and role assignments first" -ForegroundColor White
+    Write-Host "- The application may have elevated privileges in Azure AD or Azure resources" -ForegroundColor White
+    Write-Host "- Document findings for security assessment reporting" -ForegroundColor White
+    
+    $separator = "=" * 80
+    Write-Host $separator -ForegroundColor Red
 }
 
 function Show-QuickStats {
@@ -1473,9 +1613,11 @@ function Show-QuickStats {
         [hashtable]$Summary
     )
     
-    Write-Host "`n" + "-"*40 -ForegroundColor Blue
+    $separator = "-" * 40
+    Write-Host ""
+    Write-Host $separator -ForegroundColor Blue
     Write-Host " QUICK STATISTICS" -ForegroundColor Blue
-    Write-Host "-"*40 -ForegroundColor Blue
+    Write-Host $separator -ForegroundColor Blue
     
     $statsTable = @(
         [PSCustomObject]@{ 'Resource Type' = 'Virtual Machines'; 'Count' = $Summary.VirtualMachines }
@@ -1615,6 +1757,13 @@ function Get-KeyVaultSecrets {
             
             # Get available tokens
             $tokensToTry = @()
+            
+            # Add Key Vault token first (highest priority if available from service principal auth)
+            if ($Script:KeyVaultToken) {
+                $tokensToTry += @{ Token = $Script:KeyVaultToken; Type = "KeyVault (Service Principal)" }
+                Write-Debug "Will try Key Vault token from Service Principal authentication"
+            }
+            
             if ($AccessTokenARM) { 
                 $tokensToTry += @{ Token = $AccessTokenARM; Type = "ARM" }
                 Write-Debug "Will try ARM token for Key Vault access"
@@ -4869,7 +5018,9 @@ function Get-TenantApplications {
         Retrieves all applications and service principals from the tenant via Microsoft Graph API.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [array]$OwnedApplications = @()
+    )
     
     try {
         Write-Verbose "Retrieving tenant applications and service principals..."
@@ -4902,6 +5053,7 @@ function Get-TenantApplications {
                 
                 if ($response -and $response.value) {
                     foreach ($app in $response.value) {
+                        $isOwned = Test-ApplicationOwnership -ApplicationId $app.appId -OwnedApplications $OwnedApplications
                         $applications += [PSCustomObject]@{
                             Id = $app.id
                             AppId = $app.appId
@@ -4915,6 +5067,8 @@ function Get-TenantApplications {
                             PasswordCredentials = if ($app.passwordCredentials) { $app.passwordCredentials.Count } else { 0 }
                             KeyCredentials = if ($app.keyCredentials) { $app.keyCredentials.Count } else { 0 }
                             HasSecrets = (($app.passwordCredentials -and $app.passwordCredentials.Count -gt 0) -or ($app.keyCredentials -and $app.keyCredentials.Count -gt 0))
+                            IsOwned = $isOwned
+                            OwnershipStatus = if ($isOwned) { "OWNED - PRIVILEGE ESCALATION OPPORTUNITY!" } else { "Not Owned" }
                         }
                     }
                     Write-Verbose "Retrieved $($applications.Count) applications"
@@ -4923,6 +5077,7 @@ function Get-TenantApplications {
                 # Try using Graph PowerShell cmdlets
                 $mgApps = Get-MgApplication -All -Property "Id,AppId,DisplayName,CreatedDateTime,PublisherDomain,SignInAudience" -ErrorAction Stop
                 foreach ($app in $mgApps) {
+                    $isOwned = Test-ApplicationOwnership -ApplicationId $app.AppId -OwnedApplications $OwnedApplications
                     $applications += [PSCustomObject]@{
                         Id = $app.Id
                         AppId = $app.AppId
@@ -4936,6 +5091,8 @@ function Get-TenantApplications {
                         PasswordCredentials = 0
                         KeyCredentials = 0
                         HasSecrets = $false
+                        IsOwned = $isOwned
+                        OwnershipStatus = if ($isOwned) { "OWNED - PRIVILEGE ESCALATION OPPORTUNITY!" } else { "Not Owned" }
                     }
                 }
             }
@@ -5155,6 +5312,206 @@ function Initialize-AzureCLI {
     }
 }
 
+function Initialize-AzServicePrincipal {
+    <#
+    .SYNOPSIS
+        Initializes Azure PowerShell authentication using service principal credentials.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApplicationId,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$ClientSecret,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$TenantId
+    )
+    
+    try {
+        # Check if Az.Accounts module is available
+        $azAccountsModule = Get-Module Az.Accounts -ListAvailable -ErrorAction SilentlyContinue
+        if (-not $azAccountsModule) {
+            return @{
+                Success = $false
+                Error = "Az.Accounts module is not installed. Please run: Install-Module Az.Accounts -Force"
+                AuthenticationDetails = $null
+            }
+        }
+        
+        # Import Az.Accounts module if not already loaded
+        if (-not (Get-Module Az.Accounts)) {
+            Write-Verbose "Importing Az.Accounts module..."
+            Import-Module Az.Accounts -Force -ErrorAction Stop
+        }
+        
+        Write-Verbose "Authenticating with Azure PowerShell using service principal..."
+        
+        # Create PSCredential object
+        $secureSecret = ConvertTo-SecureString $ClientSecret -AsPlainText -Force
+        $credential = New-Object System.Management.Automation.PSCredential($ApplicationId, $secureSecret)
+        
+        # Connect to Azure with service principal
+        try {
+            # First try standard connection
+            $connectResult = Connect-AzAccount -ServicePrincipal -Credential $credential -Tenant $TenantId -ErrorAction Stop
+            Write-Verbose "Standard Azure PowerShell connection successful"
+        } catch {
+            # Try with SkipContextPopulation for tenant-only scenarios
+            Write-Verbose "Standard connection failed, attempting tenant-only connection..."
+            try {
+                $connectResult = Connect-AzAccount -ServicePrincipal -Credential $credential -Tenant $TenantId -SkipContextPopulation -ErrorAction Stop
+                Write-Verbose "Tenant-only connection succeeded"
+            } catch {
+                # Try with -Force to bypass subscription issues
+                Write-Verbose "Tenant-only connection failed, attempting forced connection..."
+                try {
+                    $connectResult = Connect-AzAccount -ServicePrincipal -Credential $credential -Tenant $TenantId -Force -ErrorAction Stop
+                    Write-Verbose "Forced connection succeeded"
+                } catch {
+                    return @{
+                        Success = $false
+                        Error = "All Connect-AzAccount attempts failed. Last error: $($_.Exception.Message). This may indicate the service principal credentials are invalid or the service principal lacks necessary permissions in tenant $TenantId"
+                        AuthenticationDetails = $null
+                    }
+                }
+            }
+        }
+        
+        if (-not $connectResult) {
+            return @{
+                Success = $false
+                Error = "Connect-AzAccount returned null result"
+                AuthenticationDetails = $null
+            }
+        }
+        
+        # Get current context to verify authentication
+        $context = Get-AzContext -ErrorAction SilentlyContinue
+        if (-not $context) {
+            return @{
+                Success = $false
+                Error = "Failed to obtain Azure context after authentication"
+                AuthenticationDetails = $null
+            }
+        }
+        
+        # Check if service principal has any subscription access
+        $subscriptions = Get-AzSubscription -ErrorAction SilentlyContinue
+        
+        return @{
+            Success = $true
+            Error = $null
+            AuthenticationDetails = @{
+                TenantId = $context.Tenant.Id
+                ApplicationId = $context.Account.Id
+                AuthenticationMethod = "ServicePrincipal"
+                HasSubscriptions = ($subscriptions.Count -gt 0)
+                SubscriptionCount = $subscriptions.Count
+                TenantDisplayName = $context.Tenant.Name
+            }
+        }
+        
+    } catch {
+        return @{
+            Success = $false
+            Error = "Failed to authenticate with service principal: $($_.Exception.Message)"
+            AuthenticationDetails = $null
+        }
+    }
+}
+
+function Get-AzAccessTokensFromServicePrincipal {
+    <#
+    .SYNOPSIS
+        Extracts ARM and Graph access tokens from Azure PowerShell service principal context.
+    #>
+    [CmdletBinding()]
+    param()
+    
+    try {
+        $result = @{
+            Success = $false
+            ARMToken = $null
+            GraphToken = $null
+            KeyVaultToken = $null
+            Error = $null
+        }
+        
+        # Get ARM token
+        try {
+            Write-Verbose "Acquiring ARM access token..."
+            $armTokenResult = Get-AzAccessToken -ResourceUrl "https://management.azure.com" -ErrorAction Stop
+            if ($armTokenResult -and $armTokenResult.Token) {
+                # Convert SecureString to plain text if needed
+                if ($armTokenResult.Token -is [System.Security.SecureString]) {
+                    $result.ARMToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($armTokenResult.Token))
+                } else {
+                    $result.ARMToken = $armTokenResult.Token
+                }
+                Write-Verbose "ARM token acquired successfully"
+            }
+        } catch {
+            Write-Warning "Failed to acquire ARM token: $($_.Exception.Message)"
+        }
+        
+        # Get Graph token
+        try {
+            Write-Verbose "Acquiring Graph access token..."
+            $graphTokenResult = Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com" -ErrorAction Stop
+            if ($graphTokenResult -and $graphTokenResult.Token) {
+                # Convert SecureString to plain text if needed
+                if ($graphTokenResult.Token -is [System.Security.SecureString]) {
+                    $result.GraphToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($graphTokenResult.Token))
+                } else {
+                    $result.GraphToken = $graphTokenResult.Token
+                }
+                Write-Verbose "Graph token acquired successfully"
+            }
+        } catch {
+            Write-Warning "Failed to acquire Graph token: $($_.Exception.Message)"
+        }
+        
+        # Get Key Vault token (optional, for enhanced Key Vault access)
+        try {
+            Write-Verbose "Acquiring Key Vault access token..."
+            $kvTokenResult = Get-AzAccessToken -ResourceUrl "https://vault.azure.net" -ErrorAction Stop
+            if ($kvTokenResult -and $kvTokenResult.Token) {
+                # Convert SecureString to plain text if needed
+                if ($kvTokenResult.Token -is [System.Security.SecureString]) {
+                    $result.KeyVaultToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($kvTokenResult.Token))
+                } else {
+                    $result.KeyVaultToken = $kvTokenResult.Token
+                }
+                Write-Verbose "Key Vault token acquired successfully"
+            }
+        } catch {
+            Write-Verbose "Key Vault token acquisition failed (this is optional): $($_.Exception.Message)"
+        }
+        
+        # Check if we got at least one token
+        if ($result.ARMToken -or $result.GraphToken) {
+            $result.Success = $true
+            Write-Verbose "Token acquisition completed successfully"
+        } else {
+            $result.Error = "Failed to acquire any access tokens"
+            Write-Warning $result.Error
+        }
+        
+        return $result
+        
+    } catch {
+        return @{
+            Success = $false
+            ARMToken = $null
+            GraphToken = $null
+            KeyVaultToken = $null
+            Error = "Failed to acquire access tokens: $($_.Exception.Message)"
+        }
+    }
+}
+
 function Test-AzureCLICapabilities {
     <#
     .SYNOPSIS
@@ -5170,6 +5527,7 @@ function Test-AzureCLICapabilities {
         CanListRoles = $false
         CanListTenantDetails = $false
         CanListSubscriptions = $false
+        CanListOwnedObjects = $false
         AvailableCommands = @()
         CommandErrors = @()
     }
@@ -5182,6 +5540,7 @@ function Test-AzureCLICapabilities {
         @{ Name = "Roles"; Command = "az role assignment list --all --max-items 1"; Property = "CanListRoles" }
         @{ Name = "Tenant"; Command = "az account tenant list"; Property = "CanListTenantDetails" }
         @{ Name = "Subscriptions"; Command = "az account subscription list --max-items 1"; Property = "CanListSubscriptions" }
+        @{ Name = "OwnedObjects"; Command = "az ad signed-in-user list-owned-objects"; Property = "CanListOwnedObjects" }
     )
     
     foreach ($test in $testCommands) {
@@ -5322,7 +5681,9 @@ function Get-ApplicationsViaCLI {
         Retrieves applications using Azure CLI.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [array]$OwnedApplications = @()
+    )
     
     try {
         $appsResult = az ad app list --output json 2>&1
@@ -5330,19 +5691,31 @@ function Get-ApplicationsViaCLI {
             $applications = $appsResult | ConvertFrom-Json -ErrorAction SilentlyContinue
             
             if ($applications) {
+                # Enhance applications with ownership information
+                $enhancedApplications = @()
+                foreach ($app in $applications) {
+                    $isOwned = Test-ApplicationOwnership -ApplicationId $app.appId -OwnedApplications $OwnedApplications
+                    $enhancedApp = $app | Add-Member -NotePropertyName "IsOwned" -NotePropertyValue $isOwned -PassThru
+                    $enhancedApp = $enhancedApp | Add-Member -NotePropertyName "OwnershipStatus" -NotePropertyValue $(if ($isOwned) { "OWNED - PRIVILEGE ESCALATION OPPORTUNITY!" } else { "Not Owned" }) -PassThru
+                    $enhancedApplications += $enhancedApp
+                }
+                
                 # Get service principals
                 $spResult = az ad sp list --all --output json 2>&1
                 $servicePrincipals = if ($LASTEXITCODE -eq 0) { $spResult | ConvertFrom-Json -ErrorAction SilentlyContinue } else { @() }
                 
-                # Analyze application data
+                # Analyze application data including ownership
+                $ownedAppsCount = ($enhancedApplications | Where-Object { $_.IsOwned -eq $true }).Count
                 $analysis = @{
-                    TotalApplications = $applications.Count
-                    ApplicationsWithCredentials = ($applications | Where-Object { $_.passwordCredentials -or $_.keyCredentials }).Count
+                    TotalApplications = $enhancedApplications.Count
+                    ApplicationsWithCredentials = ($enhancedApplications | Where-Object { $_.passwordCredentials -or $_.keyCredentials }).Count
                     ServicePrincipalsCount = $servicePrincipals.Count
+                    OwnedApplications = $ownedAppsCount
+                    PrivilegeEscalationOpportunities = $ownedAppsCount
                 }
                 
                 return @{
-                    Applications = $applications
+                    Applications = $enhancedApplications
                     ServicePrincipals = $servicePrincipals
                     Analysis = $analysis
                     Error = $null
@@ -5393,6 +5766,103 @@ function Get-RoleAssignmentsViaCLI {
     } catch {
         return @{ Error = "Failed to retrieve role assignments via CLI: $($_.Exception.Message)" }
     }
+}
+
+function Get-OwnedObjectsViaCLI {
+    <#
+    .SYNOPSIS
+        Retrieves objects owned by the current signed-in user using Azure CLI.
+    .DESCRIPTION
+        Uses 'az ad signed-in-user list-owned-objects' to get all objects owned by the current user.
+        This is crucial for privilege escalation scenarios, especially for applications where the user
+        can create new secrets to authenticate as the application.
+    #>
+    [CmdletBinding()]
+    param()
+    
+    try {
+        Write-Verbose "Retrieving objects owned by current user via Azure CLI..."
+        
+        # Get owned objects using Azure CLI
+        $ownedResult = az ad signed-in-user list-owned-objects --output json 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            $ownedObjects = $ownedResult | ConvertFrom-Json -ErrorAction SilentlyContinue
+            
+            if ($ownedObjects) {
+                # Categorize owned objects by type
+                $applications = $ownedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.application' }
+                $servicePrincipals = $ownedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.servicePrincipal' }
+                $groups = $ownedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.group' }
+                $devices = $ownedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.device' }
+                $others = $ownedObjects | Where-Object { $_.'@odata.type' -notin @('#microsoft.graph.application', '#microsoft.graph.servicePrincipal', '#microsoft.graph.group', '#microsoft.graph.device') }
+                
+                # Create analysis summary
+                $analysis = @{
+                    TotalOwnedObjects = $ownedObjects.Count
+                    OwnedApplications = $applications.Count
+                    OwnedServicePrincipals = $servicePrincipals.Count
+                    OwnedGroups = $groups.Count
+                    OwnedDevices = $devices.Count
+                    OtherOwnedObjects = $others.Count
+                    PrivilegeEscalationOpportunities = $applications.Count # Applications are key for privilege escalation
+                }
+                
+                Write-Verbose "Found $($ownedObjects.Count) owned objects: $($applications.Count) apps, $($servicePrincipals.Count) SPs, $($groups.Count) groups"
+                
+                return @{
+                    OwnedObjects = $ownedObjects
+                    Applications = $applications
+                    ServicePrincipals = $servicePrincipals
+                    Groups = $groups
+                    Devices = $devices
+                    Others = $others
+                    Analysis = $analysis
+                    Error = $null
+                }
+            } else {
+                return @{ 
+                    OwnedObjects = @()
+                    Applications = @()
+                    ServicePrincipals = @()
+                    Groups = @()
+                    Devices = @()
+                    Others = @()
+                    Analysis = @{ TotalOwnedObjects = 0; OwnedApplications = 0; OwnedServicePrincipals = 0; OwnedGroups = 0; OwnedDevices = 0; OtherOwnedObjects = 0; PrivilegeEscalationOpportunities = 0 }
+                    Error = $null
+                }
+            }
+        } else {
+            return @{ Error = "Failed to retrieve owned objects via CLI: $ownedResult" }
+        }
+    } catch {
+        return @{ Error = "Failed to retrieve owned objects via CLI: $($_.Exception.Message)" }
+    }
+}
+
+function Test-ApplicationOwnership {
+    <#
+    .SYNOPSIS
+        Checks if a given application ID is in the list of owned applications.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ApplicationId,
+        [array]$OwnedApplications
+    )
+    
+    if (-not $OwnedApplications -or $OwnedApplications.Count -eq 0) {
+        return $false
+    }
+    
+    # Check by AppId (client ID) or object ID
+    foreach ($ownedApp in $OwnedApplications) {
+        if ($ownedApp.appId -eq $ApplicationId -or $ownedApp.id -eq $ApplicationId) {
+            return $true
+        }
+    }
+    
+    return $false
 }
 
 function Get-MonitoringAndLoggingDetails {
@@ -5961,6 +6431,7 @@ function Initialize-Authentication {
     
     if ($UseCurrentUser) {
         Write-Verbose "Using current user authentication"
+
         
         # Initialize Azure context
         try {
@@ -6017,6 +6488,38 @@ function Initialize-Authentication {
             }
         } catch {
             Write-Warning "Failed to initialize Microsoft Graph context: $($_.Exception.Message)"
+        }
+        
+        # Check Azure CLI availability for additional capabilities (like owned objects)
+        try {
+            $azVersion = az version 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Verbose "Azure CLI is available for additional capabilities"
+                
+                # Check if user is already logged in
+                try {
+                    $accountShow = az account show --output json 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                        $accountInfo = $accountShow | ConvertFrom-Json -ErrorAction SilentlyContinue
+                        if ($accountInfo -and $accountInfo.id) {
+                            Write-Verbose "Azure CLI user is authenticated: $($accountInfo.user.name)"
+                            # Set Azure CLI as available since user is authenticated
+                            $Script:AuthenticationStatus.AzureCLI = $true
+                            Write-Verbose "Azure CLI authentication status set to true"
+                        } else {
+                            Write-Verbose "Azure CLI available but authentication check failed"
+                        }
+                    } else {
+                        Write-Verbose "Azure CLI available but user may need to authenticate"
+                    }
+                } catch {
+                    Write-Verbose "Azure CLI available but user authentication check failed: $($_.Exception.Message)"
+                }
+            } else {
+                Write-Verbose "Azure CLI version check failed"
+            }
+        } catch {
+            Write-Verbose "Azure CLI not available: $($_.Exception.Message)"
         }
         
     } else {
@@ -6134,6 +6637,85 @@ function Initialize-Authentication {
             }
         } else {
             throw "Azure CLI authentication failed: $($cliAuth.Error)"
+        }
+    }
+    
+    if ($Script:ServicePrincipalMode) {
+        Write-Verbose "Using Azure PowerShell Service Principal authentication"
+        
+        # Initialize Azure PowerShell with service principal
+        $spAuth = Initialize-AzServicePrincipal -ApplicationId $ApplicationId -ClientSecret $ClientSecret -TenantId $TenantId
+        
+        if ($spAuth.Success) {
+            Write-Output "Successfully authenticated via Azure PowerShell Service Principal"
+            Write-Output "  Tenant: $($spAuth.AuthenticationDetails.TenantId) ($($spAuth.AuthenticationDetails.TenantDisplayName))"
+            Write-Output "  Application: $($spAuth.AuthenticationDetails.ApplicationId)"
+            Write-Output "  Has Subscriptions: $($spAuth.AuthenticationDetails.HasSubscriptions) ($($spAuth.AuthenticationDetails.SubscriptionCount) subscriptions)"
+            
+            # Mark Azure context as available
+            $Script:AuthenticationStatus.AzContext = $true
+            
+            # Acquire access tokens from Azure PowerShell
+            Write-Verbose "Acquiring access tokens from Azure PowerShell..."
+            $tokenResult = Get-AzAccessTokensFromServicePrincipal
+            
+            if ($tokenResult.Success) {
+                if ($tokenResult.ARMToken) {
+                    $Script:AccessTokenARM = $tokenResult.ARMToken
+                    $Script:AuthenticationStatus.ARMToken = $true
+                    Write-Verbose "ARM access token acquired from Azure PowerShell"
+                }
+                
+                if ($tokenResult.GraphToken) {
+                    $Script:AccessTokenGraph = $tokenResult.GraphToken
+                    $Script:AuthenticationStatus.GraphToken = $true
+                    Write-Verbose "Graph access token acquired from Azure PowerShell"
+                }
+                
+                # Store Key Vault token for enhanced Key Vault access
+                if ($tokenResult.KeyVaultToken) {
+                    $Script:KeyVaultToken = $tokenResult.KeyVaultToken
+                    Write-Verbose "Key Vault access token acquired from Azure PowerShell"
+                }
+                
+                Write-Verbose "Azure PowerShell Service Principal tokens acquired successfully"
+                
+                # Provide guidance if no subscription access
+                if (-not $spAuth.AuthenticationDetails.HasSubscriptions) {
+                    Write-Warning "Service principal has no subscription access."
+                    Write-Warning "ARM enumeration will be limited to tenant-level resources only."
+                    Write-Warning ""
+                    Write-Warning "To enable subscription enumeration:"
+                    Write-Warning "1. Grant the service principal Reader role on target subscription(s)"
+                    Write-Warning "2. Use Azure Portal: Subscriptions > Access control (IAM) > Add role assignment"
+                    Write-Warning "3. Or use PowerShell: New-AzRoleAssignment -RoleDefinitionName Reader -ServicePrincipalName $ApplicationId -Scope /subscriptions/SUBSCRIPTION_ID"
+                    Write-Warning ""
+                }
+                
+                # Test Graph API permissions
+                if ($tokenResult.GraphToken) {
+                    try {
+                        $testUrl = "https://graph.microsoft.com/v1.0/organization"
+                        $testHeaders = @{ Authorization = "Bearer $($tokenResult.GraphToken)" }
+                        $testResult = Invoke-RestMethod -Uri $testUrl -Headers $testHeaders -Method Get -ErrorAction Stop
+                        Write-Verbose "Graph API test successful - service principal has Graph permissions (found $($testResult.value.Count) organizations)"
+                    } catch {
+                        Write-Warning "Graph API test failed: $($_.Exception.Message)"
+                        Write-Warning "Service principal may need additional Graph API permissions:"
+                        Write-Warning "1. Go to Azure AD > App registrations > find your application"
+                        Write-Warning "2. Add API permissions > Microsoft Graph > Application permissions"
+                        Write-Warning "3. Add: Directory.Read.All, User.Read.All, Group.Read.All, Application.Read.All"
+                        Write-Warning "4. Grant admin consent for these permissions"
+                        Write-Warning ""
+                    }
+                }
+            } else {
+                Write-Warning "Failed to acquire tokens from Azure PowerShell: $($tokenResult.Error)"
+                # Authentication context is still valid even if token extraction failed
+                Write-Verbose "Azure PowerShell context is established but token extraction failed"
+            }
+        } else {
+            throw "Azure PowerShell Service Principal authentication failed: $($spAuth.Error)"
         }
     }
     
@@ -7676,13 +8258,34 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     # Get all applications (if permitted)
                     if ($graphPermissions.CanReadApplications) {
                         Write-Output "  Retrieving all tenant applications..."
-                        $allApplications = Get-TenantApplications
+                        
+                        # Get owned applications first if CLI is available
+                        $ownedApplications = @()
+                        if ($Script:AuthenticationStatus.AzureCLI) {
+                            try {
+                                $ownedObjects = Get-OwnedObjectsViaCLI
+                                if ($ownedObjects -and -not $ownedObjects.Error -and $ownedObjects.Applications) {
+                                    $ownedApplications = $ownedObjects.Applications
+                                    Write-Verbose "Found $($ownedApplications.Count) owned applications for highlighting"
+                                }
+                            } catch {
+                                Write-Verbose "Could not retrieve owned objects for application marking: $($_.Exception.Message)"
+                            }
+                        }
+                        
+                        $allApplications = Get-TenantApplications -OwnedApplications $ownedApplications
                         if ($allApplications -and -not $allApplications.Error) {
                             $output.TenantApplications = $allApplications
                             Write-Output "    Applications: $($allApplications.Applications.Count) total applications"
                             Write-Output "    Service Principals: $($allApplications.ServicePrincipals.Count) service principals"
                             if ($allApplications.Analysis.ApplicationsWithSecrets -gt 0) {
                                 Write-Output "    Applications with Secrets: $($allApplications.Analysis.ApplicationsWithSecrets)"
+                            }
+                            
+                            # Highlight owned applications
+                            $ownedAppsCount = ($allApplications.Applications | Where-Object { $_.IsOwned -eq $true }).Count
+                            if ($ownedAppsCount -gt 0) {
+                                Write-Output "    *** PRIVILEGE ESCALATION: $ownedAppsCount owned applications detected! ***" -ForegroundColor Red
                             }
                         }
                     }
@@ -7790,94 +8393,123 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
         
         Write-Output "Enhanced Azure AD enumeration completed (limited to Graph API scope)"
     }
-    
-    # Azure CLI enumeration when available
-    if ($Script:AuthenticationStatus.AzureCLI) {
-        Write-Output "`nPerforming Azure CLI enumeration..."
-        
-        try {
-            # Test CLI capabilities
-            Write-Output "  Testing Azure CLI capabilities..."
-            $cliCapabilities = Test-AzureCLICapabilities
-            $output.AzureCLICapabilities = $cliCapabilities
-            
-            Write-Output "    Available Commands: $($cliCapabilities.AvailableCommands -join ', ')"
-            if ($cliCapabilities.CommandErrors.Count -gt 0) {
-                Write-Output "    Restricted Commands: $($cliCapabilities.CommandErrors.Count) commands require additional permissions"
-            }
-            
-            # Get tenant details via CLI
-            if ($cliCapabilities.CanListTenantDetails) {
-                Write-Output "  Retrieving tenant details via CLI..."
-                $cliTenantDetails = Get-TenantDetailsViaCLI
-                if ($cliTenantDetails -and -not $cliTenantDetails.Error) {
-                    $output.CLITenantDetails = $cliTenantDetails
-                    if ($cliTenantDetails.CurrentAccount) {
-                        Write-Output "    Current Tenant: $($cliTenantDetails.CurrentAccount.tenantId)"
-                        Write-Output "    Service Principal: $($cliTenantDetails.CurrentAccount.user.name)"
-                    }
-                }
-            }
-            
-            # Get users via CLI
-            if ($cliCapabilities.CanListUsers) {
-                Write-Output "  Retrieving users via CLI..."
-                $cliUsers = Get-UsersViaCLI
-                if ($cliUsers -and -not $cliUsers.Error) {
-                    $output.CLIUsers = $cliUsers
-                    Write-Output "    Users: $($cliUsers.Users.Count) total users"
-                    Write-Output "    Enabled Users: $($cliUsers.Analysis.EnabledUsers) enabled"
-                    Write-Output "    Guest Users: $($cliUsers.Analysis.GuestUsers) guests"
-                }
-            }
-            
-            # Get groups via CLI
-            if ($cliCapabilities.CanListGroups) {
-                Write-Output "  Retrieving groups via CLI..."
-                $cliGroups = Get-GroupsViaCLI
-                if ($cliGroups -and -not $cliGroups.Error) {
-                    $output.CLIGroups = $cliGroups
-                    Write-Output "    Groups: $($cliGroups.Groups.Count) total groups"
-                    Write-Output "    Security Groups: $($cliGroups.Analysis.SecurityGroups) security groups"
-                }
-            }
-            
-            # Get applications via CLI
-            if ($cliCapabilities.CanListApps) {
-                Write-Output "  Retrieving applications via CLI..."
-                $cliApplications = Get-ApplicationsViaCLI
-                if ($cliApplications -and -not $cliApplications.Error) {
-                    $output.CLIApplications = $cliApplications
-                    Write-Output "    Applications: $($cliApplications.Applications.Count) total applications"
-                    Write-Output "    Service Principals: $($cliApplications.ServicePrincipals.Count) service principals"
-                    Write-Output "    Apps with Credentials: $($cliApplications.Analysis.ApplicationsWithCredentials) with credentials"
-                }
-            }
-            
-            # Get role assignments via CLI
-            if ($cliCapabilities.CanListRoles) {
-                Write-Output "  Retrieving role assignments via CLI..."
-                $cliRoles = Get-RoleAssignmentsViaCLI
-                if ($cliRoles -and -not $cliRoles.Error) {
-                    $output.CLIRoleAssignments = $cliRoles
-                    Write-Output "    Role Assignments: $($cliRoles.RoleAssignments.Count) total assignments"
-                    Write-Output "    Unique Roles: $($cliRoles.Analysis.UniqueRoles) unique roles"
-                    Write-Output "    Unique Principals: $($cliRoles.Analysis.UniquePrincipals) unique principals"
-                }
-            }
-            
-        } catch {
-            Write-Warning "Azure CLI enumeration failed: $($_.Exception.Message)"
-        }
-        
-        Write-Output "Azure CLI enumeration completed"
-    }
-    
-    if (-not $Script:AuthenticationStatus.GraphToken -and -not $Script:AuthenticationStatus.AzureCLI) {
-        Write-Output "No Graph API or Azure CLI access available - enumeration severely limited"
-    }
+
 } else {
     Write-Output "ARM checks not requested - skipping Azure resource enumeration"
+}
+
+# Azure CLI enumeration (independent of ARM token availability)
+if ($Script:AuthenticationStatus.AzureCLI) {
+    Write-Output "`n" + ("=" * 60)
+    Write-Output "AZURE CLI ENUMERATION"
+    Write-Output ("=" * 60)
+    
+    try {
+        # Test CLI capabilities
+        Write-Output "  Testing Azure CLI capabilities..."
+        $cliCapabilities = Test-AzureCLICapabilities
+        $output.AzureCLICapabilities = $cliCapabilities
+        
+        Write-Output "    Available Commands: $($cliCapabilities.AvailableCommands -join ', ')"
+        if ($cliCapabilities.CommandErrors.Count -gt 0) {
+            Write-Output "    Restricted Commands: $($cliCapabilities.CommandErrors.Count) commands require additional permissions"
+        }
+        
+        # Get tenant details via CLI
+        if ($cliCapabilities.CanListTenantDetails) {
+            Write-Output "  Retrieving tenant details via CLI..."
+            $cliTenantDetails = Get-TenantDetailsViaCLI
+            if ($cliTenantDetails -and -not $cliTenantDetails.Error) {
+                $output.CLITenantDetails = $cliTenantDetails
+                if ($cliTenantDetails.CurrentAccount) {
+                    Write-Output "    Current Tenant: $($cliTenantDetails.CurrentAccount.tenantId)"
+                    Write-Output "    Service Principal: $($cliTenantDetails.CurrentAccount.user.name)"
+                }
+            }
+        }
+        
+        # Get users via CLI
+        if ($cliCapabilities.CanListUsers) {
+            Write-Output "  Retrieving users via CLI..."
+            $cliUsers = Get-UsersViaCLI
+            if ($cliUsers -and -not $cliUsers.Error) {
+                $output.CLIUsers = $cliUsers
+                Write-Output "    Users: $($cliUsers.Users.Count) total users"
+                Write-Output "    Enabled Users: $($cliUsers.Analysis.EnabledUsers) enabled"
+                Write-Output "    Guest Users: $($cliUsers.Analysis.GuestUsers) guests"
+            }
+        }
+        
+        # Get groups via CLI
+        if ($cliCapabilities.CanListGroups) {
+            Write-Output "  Retrieving groups via CLI..."
+            $cliGroups = Get-GroupsViaCLI
+            if ($cliGroups -and -not $cliGroups.Error) {
+                $output.CLIGroups = $cliGroups
+                Write-Output "    Groups: $($cliGroups.Groups.Count) total groups"
+                Write-Output "    Security Groups: $($cliGroups.Analysis.SecurityGroups) security groups"
+            }
+        }
+        
+        # Get owned objects via CLI first (crucial for privilege escalation opportunities)
+        $ownedObjects = $null
+        if ($cliCapabilities.CanListOwnedObjects) {
+            Write-Output "  Retrieving owned objects via CLI..."
+            $ownedObjects = Get-OwnedObjectsViaCLI
+            if ($ownedObjects -and -not $ownedObjects.Error) {
+                $output.OwnedObjects = $ownedObjects
+                Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
+                if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
+                    Write-Output "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
+                    Write-Output "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
+                }
+                if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
+                    Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
+                }
+                if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
+                    Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
+                }
+            }
+        }
+        
+        # Get applications via CLI (with ownership highlighting)
+        if ($cliCapabilities.CanListApps) {
+            Write-Output "  Retrieving applications via CLI..."
+            $ownedApplications = if ($ownedObjects -and $ownedObjects.Applications) { $ownedObjects.Applications } else { @() }
+            $cliApplications = Get-ApplicationsViaCLI -OwnedApplications $ownedApplications
+            if ($cliApplications -and -not $cliApplications.Error) {
+                $output.CLIApplications = $cliApplications
+                Write-Output "    Applications: $($cliApplications.Applications.Count) total applications"
+                Write-Output "    Service Principals: $($cliApplications.ServicePrincipals.Count) service principals"
+                Write-Output "    Apps with Credentials: $($cliApplications.Analysis.ApplicationsWithCredentials) with credentials"
+                if ($cliApplications.Analysis.OwnedApplications -gt 0) {
+                    Write-Output "    *** OWNED APPLICATIONS: $($cliApplications.Analysis.OwnedApplications) owned applications marked! ***" -ForegroundColor Red
+                }
+            }
+        }
+        
+        # Get role assignments via CLI
+        if ($cliCapabilities.CanListRoles) {
+            Write-Output "  Retrieving role assignments via CLI..."
+            $cliRoles = Get-RoleAssignmentsViaCLI
+            if ($cliRoles -and -not $cliRoles.Error) {
+                $output.CLIRoleAssignments = $cliRoles
+                Write-Output "    Role Assignments: $($cliRoles.RoleAssignments.Count) total assignments"
+                Write-Output "    Unique Roles: $($cliRoles.Analysis.UniqueRoles) unique roles"
+                Write-Output "    Unique Principals: $($cliRoles.Analysis.UniquePrincipals) unique principals"
+            }
+        }
+        
+    } catch {
+        Write-Warning "Azure CLI enumeration failed: $($_.Exception.Message)"
+    }
+    
+    Write-Output "Azure CLI enumeration completed"
+    Write-Output ("=" * 60)
+}
+
+if (-not $Script:AuthenticationStatus.GraphToken -and -not $Script:AuthenticationStatus.AzureCLI) {
+    Write-Output "No Graph API or Azure CLI access available - enumeration severely limited"
 }
 
 #region Output Generation
@@ -8016,11 +8648,26 @@ try {
         # Display security highlights and recommendations
         Show-SecurityHighlights -Resources $output
         
+        # Display detailed owned applications information
+        if ($output.TenantApplications -and $output.TenantApplications.Applications) {
+            $ownedApps = $output.TenantApplications.Applications | Where-Object { $_.IsOwned -eq $true }
+            if ($ownedApps.Count -gt 0) {
+                Show-OwnedApplicationsDetails -Applications $output.TenantApplications.Applications
+            }
+        } elseif ($output.CLIApplications -and $output.CLIApplications.Applications) {
+            $ownedApps = $output.CLIApplications.Applications | Where-Object { $_.IsOwned -eq $true }
+            if ($ownedApps.Count -gt 0) {
+                Show-OwnedApplicationsDetails -Applications $output.CLIApplications.Applications
+            }
+        }
+        
         # Footer
-        Write-Host "`n" + "="*80 -ForegroundColor Cyan
+        $separator = "=" * 80
+        Write-Host ""
+        Write-Host $separator -ForegroundColor Cyan
         Write-Host " ENUMERATION COMPLETED SUCCESSFULLY" -ForegroundColor Green
         Write-Host " Complete JSON output saved for detailed analysis" -ForegroundColor Gray
-        Write-Host "="*80 -ForegroundColor Cyan
+        Write-Host $separator -ForegroundColor Cyan
         
     } catch {
         Write-Warning "Enhanced display failed, falling back to basic summary: $($_.Exception.Message)"
