@@ -7270,9 +7270,11 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
 
 # Main Azure resource enumeration
 if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
-    Write-Output "`n" + ("=" * 60)
+    $separator = "=" * 60
+    Write-Output ""
+    Write-Output $separator
     Write-Output "STARTING AZURE RESOURCE ENUMERATION"
-    Write-Output ("=" * 60)
+    Write-Output $separator
     
     try {
         $context = Get-AzContext -ErrorAction SilentlyContinue
@@ -8400,9 +8402,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
 
 # Azure CLI enumeration (independent of ARM token availability)
 if ($Script:AuthenticationStatus.AzureCLI) {
-    Write-Output "`n" + ("=" * 60)
+    $separator = "=" * 60
+    Write-Output ""
+    Write-Output $separator
     Write-Output "AZURE CLI ENUMERATION"
-    Write-Output ("=" * 60)
+    Write-Output $separator
     
     try {
         # Test CLI capabilities
@@ -8514,9 +8518,11 @@ if (-not $Script:AuthenticationStatus.GraphToken -and -not $Script:Authenticatio
 
 #region Output Generation
 
-Write-Output "`n" + ("=" * 60)
+$separator = "=" * 60
+Write-Output ""
+Write-Output $separator
 Write-Output "GENERATING OUTPUT"
-Write-Output ("=" * 60)
+Write-Output $separator
 
 # Add summary statistics to output
 $output.Summary = [ordered]@{
