@@ -1414,6 +1414,47 @@ function Show-ResourcesSummary {
                 Write-Host "     - $($rg.Name): $($rg.DeploymentCount) deployments, $($rg.RoleAssignmentCount) role assignments" -ForegroundColor White
             }
         }
+        
+        # Show deployments with extracted parameters (potential sensitive data)
+        $deploymentsWithParams = @()
+        foreach ($rg in $Resources.ResourceGroups) {
+            if ($rg.Deployments) {
+                foreach ($deployment in $rg.Deployments) {
+                    if ($deployment.ParametersExtracted -and $deployment.Parameters -and $deployment.Parameters.Count -gt 0) {
+                        $deploymentsWithParams += [PSCustomObject]@{
+                            ResourceGroup = $rg.Name
+                            DeploymentName = $deployment.Name
+                            ParameterCount = $deployment.Parameters.Count
+                            Status = $deployment.Status
+                            Timestamp = $deployment.Timestamp
+                        }
+                    }
+                }
+            }
+        }
+        
+        if ($deploymentsWithParams.Count -gt 0) {
+            Write-Host "`n   *** DEPLOYMENTS WITH EXTRACTED PARAMETERS ***" -ForegroundColor Red
+            Write-Host "   WARNING: Found $($deploymentsWithParams.Count) deployment(s) with accessible parameters - potential sensitive data!" -ForegroundColor Yellow
+            
+            foreach ($dep in $deploymentsWithParams | Select-Object -First 5) {
+                Write-Host "`n   Resource Group: $($dep.ResourceGroup)" -ForegroundColor Cyan
+                Write-Host "   Deployment: $($dep.DeploymentName)" -ForegroundColor White
+                Write-Host "   Parameters Found: $($dep.ParameterCount)" -ForegroundColor Yellow
+                Write-Host "   Status: $($dep.Status)" -ForegroundColor Gray
+                Write-Host "   Timestamp: $($dep.Timestamp)" -ForegroundColor Gray
+                Write-Host "   Command to view: Get-AzResourceGroupDeployment -ResourceGroupName '$($dep.ResourceGroup)' -Name '$($dep.DeploymentName)'" -ForegroundColor Cyan
+            }
+            
+            if ($deploymentsWithParams.Count -gt 5) {
+                Write-Host "`n   ... and $($deploymentsWithParams.Count - 5) more deployments with parameters (see JSON output)" -ForegroundColor Gray
+            }
+            
+            Write-Host "`n   SECURITY IMPACT:" -ForegroundColor Red
+            Write-Host "   - Deployment parameters may contain passwords, connection strings, API keys" -ForegroundColor Yellow
+            Write-Host "   - This data is accessible to anyone with Reader permissions on the resource group" -ForegroundColor Yellow
+            Write-Host "   - Review the JSON output for complete parameter details" -ForegroundColor Yellow
+        }
     }
     
     # Azure AD / Microsoft Graph Information
@@ -1520,6 +1561,26 @@ function Show-SecurityHighlights {
     
     if ($Resources.OwnedObjects -and $Resources.OwnedObjects.Analysis.TotalOwnedObjects -gt 0) {
         $findings += "OWNED OBJECTS: $($Resources.OwnedObjects.Analysis.TotalOwnedObjects) total objects owned by current user"
+    }
+    
+    # Check for deployments with extracted parameters (potential sensitive data exposure)
+    if ($Resources.ResourceGroups) {
+        $deploymentsWithParams = 0
+        $totalParameters = 0
+        $Resources.ResourceGroups | ForEach-Object {
+            if ($_.Deployments) {
+                $_.Deployments | ForEach-Object {
+                    if ($_.ParametersExtracted -and $_.Parameters -and $_.Parameters.Count -gt 0) {
+                        $deploymentsWithParams++
+                        $totalParameters += $_.Parameters.Count
+                    }
+                }
+            }
+        }
+        
+        if ($deploymentsWithParams -gt 0) {
+            $findings += "DEPLOYMENT PARAMETERS: $totalParameters parameters extracted from $deploymentsWithParams deployments - potential sensitive data exposure!"
+        }
     }
     
     if ($Resources.TenantUsers) {
@@ -7453,11 +7514,36 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     if ($deployments -and $deployments.value) {
                         Write-Debug "Found $($deployments.value.Count) deployments in $($rg.name)"
                         foreach ($d in $deployments.value) {
-                            $deploymentsSimple += [pscustomobject]@{
+                            $deploymentDetails = [pscustomobject]@{
                                 Name = $d.name
                                 Timestamp = $d.properties.timestamp
                                 Status = $d.properties.provisioningState
+                                Parameters = @{}
+                                ParametersExtracted = $false
+                                ParameterExtractionError = $null
                             }
+                            
+                            # Try to extract deployment parameters using Azure PowerShell cmdlet
+                            if ($Script:AuthenticationStatus.AzContext) {
+                                try {
+                                    Write-Verbose "Extracting parameters for deployment: $($d.name)"
+                                    $azDeployment = Get-AzResourceGroupDeployment -ResourceGroupName $rg.name -Name $d.name -ErrorAction SilentlyContinue
+                                    if ($azDeployment -and $azDeployment.Parameters) {
+                                        $extractedParams = @{}
+                                        $azDeployment.Parameters.GetEnumerator() | ForEach-Object {
+                                            $extractedParams[$_.Key] = $_.Value.Value
+                                        }
+                                        $deploymentDetails.Parameters = $extractedParams
+                                        $deploymentDetails.ParametersExtracted = $true
+                                        Write-Debug "Successfully extracted $($extractedParams.Keys.Count) parameters from deployment $($d.name)"
+                                    }
+                                } catch {
+                                    $deploymentDetails.ParameterExtractionError = $_.Exception.Message
+                                    Write-Verbose "Failed to extract parameters for deployment $($d.name): $($_.Exception.Message)"
+                                }
+                            }
+                            
+                            $deploymentsSimple += $deploymentDetails
                         }
                     }
 
@@ -8672,7 +8758,7 @@ try {
         Write-Host ""
         Write-Host $separator -ForegroundColor Cyan
         Write-Host " ENUMERATION COMPLETED SUCCESSFULLY" -ForegroundColor Green
-        Write-Host " Complete JSON output saved for detailed analysis" -ForegroundColor Gray
+        Write-Host " Complete JSON output saved: $OutputFile" -ForegroundColor Gray
         Write-Host $separator -ForegroundColor Cyan
         
     } catch {
