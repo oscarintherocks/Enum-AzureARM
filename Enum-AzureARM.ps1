@@ -8707,8 +8707,8 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                         
                         # Show details for owned applications (highest priority for privilege escalation)
                         if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
-                            Write-Output "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
-                            Write-Output "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
+                            Write-Host "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
+                            Write-Host "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
                             foreach ($app in $ownedObjects.Applications) {
                                 Write-Output "        Application: $($app.displayName) (ID: $($app.id), AppId: $($app.appId))"
                             }
@@ -8773,7 +8773,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                             # Highlight owned applications
                             $ownedAppsCount = ($allApplications.Applications | Where-Object { $_.IsOwned -eq $true }).Count
                             if ($ownedAppsCount -gt 0) {
-                                Write-Output "    *** PRIVILEGE ESCALATION: $ownedAppsCount owned applications detected! ***" -ForegroundColor Red
+                                Write-Host "    *** PRIVILEGE ESCALATION: $ownedAppsCount owned applications detected! ***" -ForegroundColor Red
                             }
                         }
                     }
@@ -8906,8 +8906,8 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                 $output.OwnedObjects = $ownedObjects
                 Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
                 if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
-                    Write-Output "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
-                    Write-Output "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
+                    Write-Host "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
+                    Write-Host "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
                     
                     # Show details for owned applications
                     foreach ($app in $ownedObjects.Applications) {
@@ -8986,7 +8986,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     # Highlight owned applications
                     $ownedAppsCount = ($allApplications.Applications | Where-Object { $_.IsOwned -eq $true }).Count
                     if ($ownedAppsCount -gt 0) {
-                        Write-Output "    *** PRIVILEGE ESCALATION: $ownedAppsCount owned applications detected! ***" -ForegroundColor Red
+                        Write-Host "    *** PRIVILEGE ESCALATION: $ownedAppsCount owned applications detected! ***" -ForegroundColor Red
                     }
                 }
             }
@@ -9090,8 +9090,8 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                 $output.OwnedObjects = $ownedObjects
                 Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
                 if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
-                    Write-Output "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
-                    Write-Output "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
+                    Write-Host "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
+                    Write-Host "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
                 }
                 if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
                     Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
@@ -9113,7 +9113,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                 Write-Output "    Service Principals: $($cliApplications.ServicePrincipals.Count) service principals"
                 Write-Output "    Apps with Credentials: $($cliApplications.Analysis.ApplicationsWithCredentials) with credentials"
                 if ($cliApplications.Analysis.OwnedApplications -gt 0) {
-                    Write-Output "    *** OWNED APPLICATIONS: $($cliApplications.Analysis.OwnedApplications) owned applications marked! ***" -ForegroundColor Red
+                    Write-Host "    *** OWNED APPLICATIONS: $($cliApplications.Analysis.OwnedApplications) owned applications marked! ***" -ForegroundColor Red
                 }
             }
         }
