@@ -6387,14 +6387,27 @@ function Initialize-Authentication {
                 # Decode JWT token to check expiration and audience
                 $tokenParts = $AccessTokenARM.Split('.')
                 if ($tokenParts.Length -ge 2) {
-                    # Add padding if needed for base64 decoding
+                    # Handle URL-safe Base64 encoding and padding for JWT tokens
                     $payload = $tokenParts[1]
+                    
+                    # Convert URL-safe Base64 to standard Base64
+                    $payload = $payload.Replace('-', '+').Replace('_', '/')
+                    
+                    # Add padding if needed for base64 decoding
                     $paddingNeeded = 4 - ($payload.Length % 4)
                     if ($paddingNeeded -ne 4) {
                         $payload += "=" * $paddingNeeded
                     }
                     
-                    $decodedPayload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($payload))
+                    try {
+                        $payloadBytes = [System.Convert]::FromBase64String($payload)
+                        $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                    } catch {
+                        # Fallback: try without padding (some JWT implementations vary)
+                        $originalPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                        $payloadBytes = [System.Convert]::FromBase64String($originalPayload)
+                        $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                    }
                     $claims = $decodedPayload | ConvertFrom-Json
                     
                     # Check expiration
@@ -8738,6 +8751,41 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
         }
         
         Write-Output "Enhanced Azure AD enumeration completed (limited to Graph API scope)"
+    }
+
+    # Check for owned objects via Azure CLI (even if not fully CLI authenticated)
+    # This is critical for privilege escalation opportunities
+    if (-not $Script:AuthenticationStatus.AzureCLI) {
+        Write-Output ""
+        Write-Output "  Checking for owned objects via Azure CLI..."
+        try {
+            # Test if Azure CLI can list owned objects (independent of full authentication)
+            $testResult = Invoke-Expression "az ad signed-in-user list-owned-objects --output json" 2>&1
+            if ($LASTEXITCODE -eq 0 -and $null -ne $testResult) {
+                Write-Output "  Retrieving owned objects via CLI..."
+                $ownedObjects = Get-OwnedObjectsViaCLI
+                if ($ownedObjects -and -not $ownedObjects.Error) {
+                    $output.OwnedObjects = $ownedObjects
+                    Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
+                    if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
+                        Write-Output "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
+                        Write-Output "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
+                    }
+                    if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
+                        Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
+                    }
+                    if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
+                        Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
+                    }
+                } else {
+                    Write-Output "    No owned objects found or access denied"
+                }
+            } else {
+                Write-Output "    Azure CLI owned objects check failed: Not authenticated or insufficient permissions"
+            }
+        } catch {
+            Write-Output "    Azure CLI owned objects check failed: $($_.Exception.Message)"
+        }
     }
 
 } else {
