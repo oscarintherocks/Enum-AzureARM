@@ -1427,6 +1427,7 @@ function Show-ResourcesSummary {
                             ParameterCount = $deployment.Parameters.Count
                             Status = $deployment.Status
                             Timestamp = $deployment.Timestamp
+                            Parameters = $deployment.Parameters
                         }
                     }
                 }
@@ -1443,6 +1444,24 @@ function Show-ResourcesSummary {
                 Write-Host "   Parameters Found: $($dep.ParameterCount)" -ForegroundColor Yellow
                 Write-Host "   Status: $($dep.Status)" -ForegroundColor Gray
                 Write-Host "   Timestamp: $($dep.Timestamp)" -ForegroundColor Gray
+                
+                # Display actual parameter names and values for immediate visibility
+                if ($dep.Parameters -and $dep.Parameters.PSObject.Properties.Count -gt 0) {
+                    Write-Host "`n   PARAMETER DETAILS:" -ForegroundColor Red
+                    foreach ($param in $dep.Parameters.PSObject.Properties) {
+                        Write-Host "   • Parameter: $($param.Name)" -ForegroundColor Yellow
+                        Write-Host "     Value: $($param.Value)" -ForegroundColor White
+                        
+                        # Highlight potentially sensitive parameter names
+                        $sensitiveKeywords = @('password', 'secret', 'key', 'token', 'connection', 'auth', 'credential', 'pass', 'pwd')
+                        $isSensitive = $sensitiveKeywords | Where-Object { $param.Name -like "*$_*" -or $param.Value -like "*$_*" }
+                        if ($isSensitive) {
+                            Write-Host "     ⚠️  POTENTIALLY SENSITIVE DATA DETECTED! ⚠️" -ForegroundColor Red
+                        }
+                        Write-Host ""
+                    }
+                }
+                
                 Write-Host "   Command to view: Get-AzResourceGroupDeployment -ResourceGroupName '$($dep.ResourceGroup)' -Name '$($dep.DeploymentName)'" -ForegroundColor Cyan
             }
             
