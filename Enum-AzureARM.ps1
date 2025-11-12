@@ -2867,11 +2867,16 @@ function Get-StorageAccountDetails {
                 # Extract resource group name from storage account ID
                 # Format: /subscriptions/{subscription}/resourceGroups/{resourceGroup}/providers/Microsoft.Storage/storageAccounts/{name}
                 $resourceGroupName = ($StorageAccountId -split '/')[4]
+                Write-Debug "Storage Account ID: $StorageAccountId"
                 Write-Debug "Extracted resource group name: $resourceGroupName"
+                Write-Output "  Resource Group: $resourceGroupName (extracted from storage account ID)"
                 
                 # Create storage account context
+                Write-Debug "Attempting to get storage account: $StorageAccountName in resource group: $resourceGroupName"
                 $storageAccount = Get-AzStorageAccount -ResourceGroupName $resourceGroupName -Name $StorageAccountName -ErrorAction Stop
+                Write-Debug "Successfully retrieved storage account object"
                 $ctx = $storageAccount.Context
+                Write-Debug "Successfully created storage context"
                 
                 # Get containers using storage context
                 $containers = Get-AzStorageContainer -Context $ctx -ErrorAction Stop
@@ -8004,19 +8009,36 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                             # Ask user permission before starting blind download mode
                                             Write-Host "`n    WARNING: Blind download mode will attempt to guess common file names." -ForegroundColor Yellow
                                             Write-Host "    This process can take 15-30 minutes to complete and may generate many 404 errors." -ForegroundColor Yellow
-                                            Write-Host "    Do you want to proceed with blind download enumeration? (Y/n) " -ForegroundColor Cyan -NoNewline
+                                            Write-Host "    Do you want to proceed with blind download enumeration? (y/N) " -ForegroundColor Cyan -NoNewline
                                             
                                             # 10-second timeout with default to NO
                                             $timeout = 10
                                             $userInput = $null
                                             
-                                            # Use .NET Console.KeyAvailable for more reliable timeout
+                                            # Interactive countdown with proper timeout
                                             $Host.UI.RawUI.FlushInputBuffer()
                                             $startTime = Get-Date
                                             $inputBuffer = ""
+                                            $lastCountdown = -1
                                             
                                             do {
-                                                Start-Sleep -Milliseconds 50
+                                                $elapsed = (Get-Date) - $startTime
+                                                $remaining = $timeout - [int]$elapsed.TotalSeconds
+                                                
+                                                # Update countdown display if changed
+                                                if ($remaining -ne $lastCountdown -and $remaining -ge 0) {
+                                                    if ($lastCountdown -ne -1) {
+                                                        # Clear previous countdown
+                                                        Write-Host ("`b" * 20) -NoNewline
+                                                        Write-Host (" " * 20) -NoNewline
+                                                        Write-Host ("`b" * 20) -NoNewline
+                                                    }
+                                                    Write-Host "($remaining seconds) " -ForegroundColor Yellow -NoNewline
+                                                    $lastCountdown = $remaining
+                                                }
+                                                
+                                                Start-Sleep -Milliseconds 200
+                                                
                                                 if ($Host.UI.RawUI.KeyAvailable) {
                                                     $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
                                                     if ($key.VirtualKeyCode -eq 13) { # Enter key
@@ -8027,15 +8049,26 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                             $inputBuffer = $inputBuffer.Substring(0, $inputBuffer.Length - 1)
                                                             Write-Host "`b `b" -NoNewline
                                                         }
-                                                    } elseif ($key.Character -match '[a-zA-Z]') {
-                                                        $inputBuffer += $key.Character
+                                                    } elseif ($key.Character -match '[ynYN]') {
+                                                        # Clear countdown first
+                                                        Write-Host ("`b" * 20) -NoNewline
+                                                        Write-Host (" " * 20) -NoNewline
+                                                        Write-Host ("`b" * 20) -NoNewline
+                                                        
+                                                        $inputBuffer = $key.Character
                                                         Write-Host $key.Character -NoNewline
+                                                        $userInput = $inputBuffer
+                                                        break
                                                     }
                                                 }
                                             } while ((Get-Date) - $startTime -lt (New-TimeSpan -Seconds $timeout))
                                             
                                             if (-not $userInput) {
-                                                Write-Host "n (timeout - defaulting to NO)" -ForegroundColor Red
+                                                # Clear countdown and show timeout message
+                                                Write-Host ("`b" * 20) -NoNewline
+                                                Write-Host (" " * 20) -NoNewline
+                                                Write-Host ("`b" * 20) -NoNewline
+                                                Write-Host "N (timeout - defaulting to NO)" -ForegroundColor Red
                                             } else {
                                                 Write-Host ""
                                             }
