@@ -2859,6 +2859,7 @@ function Get-StorageAccountDetails {
             }
         } catch {
             Write-Debug "Could not retrieve containers via ARM API for $StorageAccountName : $($_.Exception.Message)"
+            Write-Output "  ARM container enumeration failed - attempting PowerShell fallback method..."
             
             # Fallback: Try using Get-AzStorageContainer with storage account context
             Write-Debug "Attempting container enumeration using Get-AzStorageContainer fallback method"
@@ -2875,6 +2876,7 @@ function Get-StorageAccountDetails {
                 # Get containers using storage context
                 $containers = Get-AzStorageContainer -Context $ctx -ErrorAction Stop
                 Write-Debug "Found $($containers.Count) containers using storage context fallback for $StorageAccountName"
+                Write-Output "  Successfully found $($containers.Count) containers using PowerShell fallback method"
                 
                 foreach ($container in $containers) {
                     $containerDetail = @{
@@ -2920,6 +2922,7 @@ function Get-StorageAccountDetails {
                 
             } catch {
                 Write-Debug "Fallback container enumeration also failed for $StorageAccountName : $($_.Exception.Message)"
+                Write-Output "  PowerShell fallback method also failed: $($_.Exception.Message)"
                 $storageDetails.Error = "Could not retrieve containers via ARM API or storage context: $($_.Exception.Message)"
             }
         }
@@ -8006,22 +8009,36 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                             # 10-second timeout with default to NO
                                             $timeout = 10
                                             $userInput = $null
-                                            $job = Start-Job -ScriptBlock {
-                                                Read-Host
-                                            }
                                             
+                                            # Use .NET Console.KeyAvailable for more reliable timeout
+                                            $Host.UI.RawUI.FlushInputBuffer()
                                             $startTime = Get-Date
-                                            while ((Get-Date) - $startTime -lt (New-TimeSpan -Seconds $timeout) -and $job.State -eq 'Running') {
-                                                Start-Sleep -Milliseconds 100
-                                            }
+                                            $inputBuffer = ""
                                             
-                                            if ($job.State -eq 'Completed') {
-                                                $userInput = Receive-Job $job
-                                            } else {
-                                                Stop-Job $job
+                                            do {
+                                                Start-Sleep -Milliseconds 50
+                                                if ($Host.UI.RawUI.KeyAvailable) {
+                                                    $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                                                    if ($key.VirtualKeyCode -eq 13) { # Enter key
+                                                        $userInput = $inputBuffer
+                                                        break
+                                                    } elseif ($key.VirtualKeyCode -eq 8) { # Backspace
+                                                        if ($inputBuffer.Length -gt 0) {
+                                                            $inputBuffer = $inputBuffer.Substring(0, $inputBuffer.Length - 1)
+                                                            Write-Host "`b `b" -NoNewline
+                                                        }
+                                                    } elseif ($key.Character -match '[a-zA-Z]') {
+                                                        $inputBuffer += $key.Character
+                                                        Write-Host $key.Character -NoNewline
+                                                    }
+                                                }
+                                            } while ((Get-Date) - $startTime -lt (New-TimeSpan -Seconds $timeout))
+                                            
+                                            if (-not $userInput) {
                                                 Write-Host "n (timeout - defaulting to NO)" -ForegroundColor Red
+                                            } else {
+                                                Write-Host ""
                                             }
-                                            Remove-Job $job -Force
                                             
                                             $proceedWithBlindDownload = $false
                                             if ($userInput -and ($userInput.ToLower() -eq 'y' -or $userInput.ToLower() -eq 'yes')) {
