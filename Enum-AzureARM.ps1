@@ -83,8 +83,9 @@ $Script:AuthenticationStatus = @{
 # Global variable for Service Principal authentication state
 $Script:ServicePrincipalMode = $false
 
-# Global variable for Key Vault token (optional)
+# Global variables for resource-specific tokens
 $Script:KeyVaultToken = $null
+$Script:StorageToken = $null
 
 # Display help if requested or if no authentication method is provided
 if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId) -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId))) {
@@ -688,6 +689,182 @@ function Get-AzAccessTokenFromContext {
         Write-Warning "Failed to get access token from Az context: $($_.Exception.Message)"
         return $null
     }
+}
+
+function Get-ResourceSpecificTokens {
+    <#
+    .SYNOPSIS
+        Retrieves resource-specific access tokens for Storage and Key Vault operations.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("Storage", "KeyVault", "Both")]
+        [string]$TokenType = "Both",
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$ShowGuidance
+    )
+    
+    $result = @{
+        StorageToken = $null
+        KeyVaultToken = $null
+        Success = $false
+        Error = $null
+        Guidance = @()
+    }
+    
+    try {
+        # Check if Azure CLI is available and authenticated
+        $azCli = Get-Command az -ErrorAction SilentlyContinue
+        if (-not $azCli) {
+            $result.Error = "Azure CLI (az) is not installed or not available in PATH"
+            return $result
+        }
+        
+        # Check if we're logged in
+        $accountCheck = az account show --output json 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $result.Error = "Not authenticated with Azure CLI. Please run 'az login' first."
+            return $result
+        }
+        
+        # Get Storage token
+        if ($TokenType -eq "Storage" -or $TokenType -eq "Both") {
+            try {
+                Write-Verbose "Acquiring Storage access token from Azure CLI..."
+                $storageTokenJson = az account get-access-token --resource=https://storage.azure.com/ --output json 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $storageTokenObj = $storageTokenJson | ConvertFrom-Json
+                    $result.StorageToken = $storageTokenObj.accessToken
+                    $Script:StorageToken = $result.StorageToken
+                    Write-Verbose "Storage token acquired successfully"
+                } else {
+                    Write-Warning "Failed to get Storage token from Azure CLI: $storageTokenJson"
+                    $result.Guidance += @{
+                        Resource = "Storage"
+                        ManualCommand = "az account get-access-token --resource=https://storage.azure.com/"
+                        Usage = "Use for direct blob/file operations when RBAC permissions are insufficient"
+                    }
+                }
+            } catch {
+                Write-Warning "Error getting Storage token: $($_.Exception.Message)"
+                $result.Guidance += @{
+                    Resource = "Storage"
+                    Error = $_.Exception.Message
+                    ManualCommand = "az account get-access-token --resource=https://storage.azure.com/"
+                }
+            }
+        }
+        
+        # Get Key Vault token
+        if ($TokenType -eq "KeyVault" -or $TokenType -eq "Both") {
+            try {
+                Write-Verbose "Acquiring Key Vault access token from Azure CLI..."
+                $kvTokenJson = az account get-access-token --resource=https://vault.azure.net/ --output json 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $kvTokenObj = $kvTokenJson | ConvertFrom-Json
+                    $result.KeyVaultToken = $kvTokenObj.accessToken
+                    $Script:KeyVaultToken = $result.KeyVaultToken
+                    Write-Verbose "Key Vault token acquired successfully"
+                } else {
+                    Write-Warning "Failed to get Key Vault token from Azure CLI: $kvTokenJson"
+                    $result.Guidance += @{
+                        Resource = "KeyVault"
+                        ManualCommand = "az account get-access-token --resource=https://vault.azure.net/"
+                        Usage = "Use for direct Key Vault secret operations"
+                    }
+                }
+            } catch {
+                Write-Warning "Error getting Key Vault token: $($_.Exception.Message)"
+                $result.Guidance += @{
+                    Resource = "KeyVault"
+                    Error = $_.Exception.Message
+                    ManualCommand = "az account get-access-token --resource=https://vault.azure.net/"
+                }
+            }
+        }
+        
+        $result.Success = ($result.StorageToken -or $result.KeyVaultToken)
+        
+        # Show guidance if requested or if tokens failed
+        if ($ShowGuidance -or $result.Guidance.Count -gt 0) {
+            Show-ResourceTokenGuidance -TokenResults $result
+        }
+        
+        return $result
+        
+    } catch {
+        $result.Error = "Failed to get resource-specific tokens: $($_.Exception.Message)"
+        return $result
+    }
+}
+
+function Show-ResourceTokenGuidance {
+    <#
+    .SYNOPSIS
+        Shows guidance for manually obtaining resource-specific tokens.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TokenResults
+    )
+    
+    if ($TokenResults.Guidance.Count -eq 0) {
+        return
+    }
+    
+    Write-Host "`n" -NoNewline
+    Write-Host "RESOURCE TOKEN GUIDANCE" -ForegroundColor Yellow
+    Write-Host "========================" -ForegroundColor Yellow
+    Write-Host "Some operations require resource-specific tokens instead of ARM management tokens.`n" -ForegroundColor Gray
+    
+    foreach ($guidance in $TokenResults.Guidance) {
+        Write-Host "Resource: $($guidance.Resource)" -ForegroundColor Cyan
+        Write-Host "Manual Token Command:" -ForegroundColor White
+        Write-Host "  $($guidance.ManualCommand)" -ForegroundColor Green
+        
+        if ($guidance.Usage) {
+            Write-Host "Usage: $($guidance.Usage)" -ForegroundColor Gray
+        }
+        
+        if ($guidance.Error) {
+            Write-Host "Error: $($guidance.Error)" -ForegroundColor Red
+        }
+        
+        # Show specific usage examples
+        if ($guidance.Resource -eq "Storage") {
+            Write-Host "`nStorage Token Usage Examples:" -ForegroundColor Yellow
+            Write-Host "  # Get token" -ForegroundColor Gray
+            Write-Host "  `$storageToken = (az account get-access-token --resource=https://storage.azure.com/ | ConvertFrom-Json).accessToken" -ForegroundColor White
+            Write-Host "  # Use with direct REST API calls" -ForegroundColor Gray
+            Write-Host "  `$headers = @{ 'Authorization' = \"Bearer `$storageToken\"; 'x-ms-version' = '2020-10-02' }" -ForegroundColor White
+            Write-Host "  Invoke-WebRequest -Uri \"https://storageaccount.blob.core.windows.net/container/blob\" -Headers `$headers" -ForegroundColor White
+        }
+        
+        if ($guidance.Resource -eq "KeyVault") {
+            Write-Host "`nKey Vault Token Usage Examples:" -ForegroundColor Yellow
+            Write-Host "  # Get token" -ForegroundColor Gray
+            Write-Host "  `$kvToken = (az account get-access-token --resource=https://vault.azure.net/ | ConvertFrom-Json).accessToken" -ForegroundColor White
+            Write-Host "  # Use with direct REST API calls" -ForegroundColor Gray
+            Write-Host "  `$headers = @{ 'Authorization' = \"Bearer `$kvToken\" }" -ForegroundColor White
+            Write-Host "  Invoke-RestMethod -Uri \"https://keyvault.vault.azure.net/secrets/secretname?api-version=7.3\" -Headers `$headers" -ForegroundColor White
+        }
+        
+        Write-Host ""
+    }
+    
+    Write-Host "Alternative: PowerShell Module Methods" -ForegroundColor Yellow
+    Write-Host "  # For Storage (requires Az.Storage module)" -ForegroundColor Gray
+    Write-Host "  Connect-AzAccount" -ForegroundColor White
+    Write-Host "  `$ctx = New-AzStorageContext -StorageAccountName 'account' -UseConnectedAccount" -ForegroundColor White
+    Write-Host "  Get-AzStorageBlobContent -Container 'container' -Blob 'file' -Context `$ctx" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  # For Key Vault (requires Az.KeyVault module)" -ForegroundColor Gray
+    Write-Host "  Connect-AzAccount" -ForegroundColor White
+    Write-Host "  Get-AzKeyVaultSecret -VaultName 'keyvault' -Name 'secretname'" -ForegroundColor White
+    Write-Host ""
 }
 
 function Get-AccessTokenFromAzureCLI {
@@ -1870,6 +2047,7 @@ function Get-KeyVaultSecrets {
                         $kvTokenObj = $kvTokenOutput | ConvertFrom-Json -ErrorAction SilentlyContinue
                         if ($kvTokenObj -and $kvTokenObj.accessToken) {
                             $tokensToTry += @{ Token = $kvTokenObj.accessToken; Type = "KeyVault" }
+                            $Script:KeyVaultToken = $kvTokenObj.accessToken  # Store for reuse
                             Write-Debug "Obtained Key Vault specific token via Azure CLI"
                         }
                     }
@@ -3462,21 +3640,94 @@ function Get-StorageAccountFiles {
                                 Write-Verbose "      AUTH METHOD 3: Attempting Azure CLI authentication..."
                                 $azAccount = az account show 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
                                 if ($azAccount) {
-                                    Write-Verbose "      Azure CLI is logged in, attempting blob download..."
-                                    # Create temp file to capture CLI output
-                                    $tempErrorFile = [System.IO.Path]::GetTempFileName()
-                                    az storage blob download --account-name $StorageAccountName --container-name $container.name --name $blob.Name --file $localFilePath --auth-mode login 2>$tempErrorFile
-                                    $cliError = if (Test-Path $tempErrorFile) { Get-Content $tempErrorFile -Raw } else { "" }
-                                    Remove-Item $tempErrorFile -ErrorAction SilentlyContinue
+                                    Write-Verbose "      Azure CLI is logged in (Account: $($azAccount.user.name)), attempting blob download..."
+                                    Write-Verbose "      CLI Command: az storage blob download --account-name $StorageAccountName --container-name $($container.name) --name $($blob.Name) --file `"$localFilePath`" --auth-mode login"
                                     
-                                    if ($LASTEXITCODE -eq 0 -and (Test-Path $localFilePath) -and (Get-Item $localFilePath).Length -gt 0) {
+                                    # Create temp files to capture both stdout and stderr
+                                    $tempErrorFile = [System.IO.Path]::GetTempFileName()
+                                    $tempOutputFile = [System.IO.Path]::GetTempFileName()
+                                    
+                                    # Try with login first, then with key if available
+                                    $cliArgs = @("storage","blob","download","--account-name",$StorageAccountName,"--container-name",$container.name,"--name",$blob.Name,"--file",$localFilePath)
+                                    
+                                    # First attempt: OAuth/login authentication
+                                    $cliArgs += @("--auth-mode","login")
+                                    $process = Start-Process -FilePath "az" -ArgumentList $cliArgs -RedirectStandardError $tempErrorFile -RedirectStandardOutput $tempOutputFile -NoNewWindow -Wait -PassThru
+                                    
+                                    $cliError = if (Test-Path $tempErrorFile) { Get-Content $tempErrorFile -Raw -ErrorAction SilentlyContinue } else { "" }
+                                    $cliOutput = if (Test-Path $tempOutputFile) { Get-Content $tempOutputFile -Raw -ErrorAction SilentlyContinue } else { "" }
+                                    
+                                    # Clean up temp files
+                                    Remove-Item $tempErrorFile -ErrorAction SilentlyContinue
+                                    Remove-Item $tempOutputFile -ErrorAction SilentlyContinue
+                                    
+                                    Write-Verbose "      CLI Exit Code: $($process.ExitCode)"
+                                    if ($cliOutput) { Write-Verbose "      CLI Output: $($cliOutput -replace '\n|\r', ' ')" }
+                                    if ($cliError) { Write-Verbose "      CLI Error: $($cliError -replace '\n|\r', ' ')" }
+                                    
+                                    # Check if file was actually downloaded
+                                    $fileExists = Test-Path $localFilePath
+                                    $fileSize = if ($fileExists) { (Get-Item $localFilePath -ErrorAction SilentlyContinue).Length } else { 0 }
+                                    Write-Verbose "      File exists after CLI: $fileExists, Size: $fileSize bytes"
+                                    
+                                    if ($process.ExitCode -eq 0 -and $fileExists -and $fileSize -gt 0) {
                                         $downloadSuccess = $true
-                                        $authMethodUsed = "AzureCLI"
-                                        Write-Verbose "      Downloaded $($blob.Name) using Azure CLI"
+                                        $authMethodUsed = "AzureCLI-Login"
+                                        Write-Verbose "      Downloaded $($blob.Name) using Azure CLI (OAuth)"
                                     } else {
-                                        Write-Verbose "      Azure CLI download failed: Exit code $LASTEXITCODE, Error: $cliError"
-                                        $authMethodDetails += "AzureCLI-Failed: ExitCode=$LASTEXITCODE, Error=$($cliError -replace '\n|\r', ' ')"
-                                        if ($cliError -match "(403|Forbidden|Unauthorized|401)") {
+                                        $failureReason = "LoginAuth: ExitCode=$($process.ExitCode)"
+                                        if ($cliError) { $failureReason += ", Error=$($cliError -replace '\n|\r', ' ')" }
+                                        if (-not $fileExists) { $failureReason += ", FileNotCreated" }
+                                        elseif ($fileSize -eq 0) { $failureReason += ", EmptyFile" }
+                                        
+                                        Write-Verbose "      Azure CLI OAuth download failed: $failureReason"
+                                        
+                                        # If OAuth failed due to permissions and we have a storage account key, try with key authentication
+                                        if ($StorageAccountKey -and $cliError -match "(required permissions|Storage Blob Data|permission)") {
+                                            Write-Verbose "      Retrying Azure CLI download with storage account key..."
+                                            
+                                            # Clear previous temp files and create new ones for key attempt
+                                            Remove-Item $tempErrorFile -ErrorAction SilentlyContinue
+                                            Remove-Item $tempOutputFile -ErrorAction SilentlyContinue
+                                            $tempErrorFile = [System.IO.Path]::GetTempFileName()
+                                            $tempOutputFile = [System.IO.Path]::GetTempFileName()
+                                            
+                                            # Remove the file if it was partially created
+                                            if (Test-Path $localFilePath) { Remove-Item $localFilePath -Force -ErrorAction SilentlyContinue }
+                                            
+                                            # Build command with key authentication
+                                            $keyCliArgs = @("storage","blob","download","--account-name",$StorageAccountName,"--container-name",$container.name,"--name",$blob.Name,"--file",$localFilePath,"--account-key",$StorageAccountKey)
+                                            Write-Verbose "      CLI Key Command: az storage blob download --account-name $StorageAccountName --container-name $($container.name) --name $($blob.Name) --file `"$localFilePath`" --account-key [KEY_REDACTED]"
+                                            
+                                            $keyProcess = Start-Process -FilePath "az" -ArgumentList $keyCliArgs -RedirectStandardError $tempErrorFile -RedirectStandardOutput $tempOutputFile -NoNewWindow -Wait -PassThru
+                                            
+                                            $keyCliError = if (Test-Path $tempErrorFile) { Get-Content $tempErrorFile -Raw -ErrorAction SilentlyContinue } else { "" }
+                                            $keyCliOutput = if (Test-Path $tempOutputFile) { Get-Content $tempOutputFile -Raw -ErrorAction SilentlyContinue } else { "" }
+                                            
+                                            Write-Verbose "      CLI Key Exit Code: $($keyProcess.ExitCode)"
+                                            if ($keyCliOutput) { Write-Verbose "      CLI Key Output: $($keyCliOutput -replace '\n|\r', ' ')" }
+                                            if ($keyCliError) { Write-Verbose "      CLI Key Error: $($keyCliError -replace '\n|\r', ' ')" }
+                                            
+                                            # Check if key-based download succeeded
+                                            $keyFileExists = Test-Path $localFilePath
+                                            $keyFileSize = if ($keyFileExists) { (Get-Item $localFilePath -ErrorAction SilentlyContinue).Length } else { 0 }
+                                            Write-Verbose "      File exists after CLI key attempt: $keyFileExists, Size: $keyFileSize bytes"
+                                            
+                                            if ($keyProcess.ExitCode -eq 0 -and $keyFileExists -and $keyFileSize -gt 0) {
+                                                $downloadSuccess = $true
+                                                $authMethodUsed = "AzureCLI-Key"
+                                                Write-Verbose "      Downloaded $($blob.Name) using Azure CLI (Storage Key)"
+                                            } else {
+                                                $keyFailureReason = "KeyAuth: ExitCode=$($keyProcess.ExitCode)"
+                                                if ($keyCliError) { $keyFailureReason += ", Error=$($keyCliError -replace '\n|\r', ' ')" }
+                                                Write-Verbose "      Azure CLI key download also failed: $keyFailureReason"
+                                                $authMethodDetails += "AzureCLI-Failed: $failureReason; $keyFailureReason"
+                                            }
+                                        } else {
+                                            $authMethodDetails += "AzureCLI-Failed: $failureReason"
+                                        }
+                                        
+                                        if ($cliError -match "(403|Forbidden|Unauthorized|401|BlobNotFound|ContainerNotFound|required permissions|Storage Blob Data|Storage Queue Data|Storage Table Data|auth-mode.*key)") {
                                             $permissionError = $true
                                         }
                                     }
@@ -3494,39 +3745,101 @@ function Get-StorageAccountFiles {
                             }
                         }
                         
-                        # Method 4: Try direct HTTP request with bearer token
+                        # Method 4: Try direct HTTP request with storage-specific token
+                        if (-not $downloadSuccess -and $Script:StorageToken) {
+                            try {
+                                Write-Verbose "      AUTH METHOD 4: Attempting direct HTTP request with storage-specific token..."
+                                $blobUri = "https://$StorageAccountName.blob.core.windows.net/$($container.name)/$($blob.Name)"
+                                $headers = @{
+                                    'Authorization' = "Bearer $Script:StorageToken"
+                                    'x-ms-version' = '2020-10-02'
+                                }
+                                
+                                Write-Verbose "      Making storage token request to: $blobUri"
+                                Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
+                                $downloadSuccess = $true
+                                $authMethodUsed = "StorageToken"
+                                Write-Verbose "      Downloaded $($blob.Name) using storage-specific token"
+                            } catch {
+                                $errorMsg = $_.Exception.Message
+                                if ($errorMsg -match "(403|Forbidden|Unauthorized|401)") {
+                                    $permissionError = $true
+                                }
+                                Write-Verbose "      Failed to download $($blob.Name) using storage token: $errorMsg"
+                                $authMethodDetails += "StorageToken-Exception: $($errorMsg -replace '\n|\r', ' ')"
+                            }
+                        } elseif (-not $downloadSuccess -and -not $Script:StorageToken) {
+                            # Try to get storage token automatically
+                            Write-Verbose "      AUTH METHOD 4: No storage token available, attempting to retrieve..."
+                            try {
+                                $storageTokenResult = Get-ResourceSpecificTokens -TokenType "Storage"
+                                if ($storageTokenResult.Success -and $storageTokenResult.StorageToken) {
+                                    Write-Verbose "      Storage token retrieved successfully, retrying download..."
+                                    $blobUri = "https://$StorageAccountName.blob.core.windows.net/$($container.name)/$($blob.Name)"
+                                    $headers = @{
+                                        'Authorization' = "Bearer $($storageTokenResult.StorageToken)"
+                                        'x-ms-version' = '2020-10-02'
+                                    }
+                                    
+                                    Write-Verbose "      Making auto-retrieved storage token request to: $blobUri"
+                                    Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
+                                    $downloadSuccess = $true
+                                    $authMethodUsed = "StorageToken-AutoRetrieved"
+                                    Write-Verbose "      Downloaded $($blob.Name) using auto-retrieved storage token"
+                                } else {
+                                    Write-Verbose "      Failed to automatically retrieve storage token"
+                                    $authMethodDetails += "StorageToken-AutoRetrievalFailed"
+                                }
+                            } catch {
+                                $errorMsg = $_.Exception.Message
+                                Write-Verbose "      Failed to download $($blob.Name) using auto-retrieved storage token: $errorMsg"
+                                $authMethodDetails += "StorageToken-AutoRetrieval-Exception: $($errorMsg -replace '\n|\r', ' ')"
+                            }
+                        }
+                        
+                        # Method 5: Fallback to ARM bearer token (less likely to work for storage)
                         if (-not $downloadSuccess -and $script:accessToken) {
                             try {
-                                Write-Verbose "      AUTH METHOD 4: Attempting direct HTTP request with bearer token..."
+                                Write-Verbose "      AUTH METHOD 5: Attempting direct HTTP request with ARM bearer token (fallback)..."
                                 $blobUri = "https://$StorageAccountName.blob.core.windows.net/$($container.name)/$($blob.Name)"
                                 $headers = @{
                                     'Authorization' = "Bearer $script:accessToken"
                                     'x-ms-version' = '2020-10-02'
                                 }
                                 
-                                Write-Verbose "      Making bearer token request to: $blobUri"
+                                Write-Verbose "      Making ARM bearer token request to: $blobUri"
                                 Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
                                 $downloadSuccess = $true
-                                $authMethodUsed = "BearerToken"
-                                Write-Verbose "      Downloaded $($blob.Name) using bearer token"
+                                $authMethodUsed = "ARMBearerToken-Fallback"
+                                Write-Verbose "      Downloaded $($blob.Name) using ARM bearer token (unexpected success)"
                             } catch {
                                 $errorMsg = $_.Exception.Message
                                 if ($errorMsg -match "(403|Forbidden|Unauthorized|401)") {
                                     $permissionError = $true
                                 }
-                                Write-Verbose "      Failed to download $($blob.Name) using bearer token: $errorMsg"
-                                $authMethodDetails += "BearerToken-Exception: $($errorMsg -replace '\n|\r', ' ')"
+                                Write-Verbose "      Failed to download $($blob.Name) using ARM bearer token: $errorMsg"
+                                $authMethodDetails += "ARMBearerToken-Exception: $($errorMsg -replace '\n|\r', ' ')"
                             }
                         } elseif (-not $downloadSuccess -and -not $script:accessToken) {
-                            Write-Verbose "      AUTH METHOD 4: Skipping bearer token - no access token available"
-                            $authMethodDetails += "BearerToken-NotAvailable"
+                            Write-Verbose "      AUTH METHOD 5: Skipping ARM bearer token - no access token available"
+                            $authMethodDetails += "ARMBearerToken-NotAvailable"
                         }
                         
-                        # If all methods failed, add comprehensive failure details
+                        # If all methods failed, add comprehensive failure details and guidance
                         if (-not $downloadSuccess) {
                             Write-Verbose "      All authentication methods failed for $($blob.Name). Attempted methods: $($authMethodDetails -join ' | ')"
                             Write-Host "        DETAILED AUTH FAILURE for $($blob.Name): $($authMethodDetails -join ' | ')" -ForegroundColor Yellow
                             $downloadSummary.Errors += "Detailed auth failure for $($blob.Name): $($authMethodDetails -join ' | ')"
+                            
+                            # Show resource-specific token guidance if this looks like a permission/token issue
+                            $needsStorageToken = $authMethodDetails | Where-Object { 
+                                $_ -match "(permission|forbidden|unauthorized|StorageToken|required permissions)" 
+                            }
+                            if ($needsStorageToken -and -not $Script:StorageToken) {
+                                Write-Host "        HINT: This may require a storage-specific token. Run:" -ForegroundColor Cyan
+                                Write-Host "              az account get-access-token --resource=https://storage.azure.com/" -ForegroundColor White
+                                Write-Host "              Then use the token with direct REST API calls" -ForegroundColor Gray
+                            }
                         }
                         
                         if ($downloadSuccess) {
@@ -7044,6 +7357,22 @@ function Initialize-Authentication {
             }
         }
         
+        # Automatically attempt to retrieve resource-specific tokens for enhanced functionality
+        if ($Script:AuthenticationStatus.AzContext -or $AccessTokenARM) {
+            Write-Verbose "Attempting to retrieve resource-specific tokens (Storage & Key Vault)..."
+            try {
+                $resourceTokens = Get-ResourceSpecificTokens -TokenType "Both"
+                if ($resourceTokens.StorageToken) {
+                    Write-Verbose "Storage token retrieved successfully - enhanced blob download capabilities available"
+                }
+                if ($resourceTokens.KeyVaultToken) {
+                    Write-Verbose "Key Vault token retrieved successfully - enhanced secret access capabilities available"
+                }
+            } catch {
+                Write-Verbose "Resource-specific token retrieval failed (non-critical): $($_.Exception.Message)"
+            }
+        }
+        
         # Set Graph token if provided separately
         if ($AccessTokenGraph -and -not $Script:AuthenticationStatus.GraphToken -and $Script:PerformGraphChecks) {
             try {
@@ -8483,6 +8812,19 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         
                                         if ($downloadResult.Errors -and $downloadResult.Errors.Count -gt 0) {
                                             Write-Output "      Errors Encountered: $($downloadResult.Errors.Count) (see detailed logs for specifics)"
+                                            
+                                            # Check if errors indicate permission issues and provide guidance
+                                            $hasPermissionErrors = $downloadResult.Errors | Where-Object { $_ -match "(permission denied|required permissions|Storage Blob Data|auth-mode.*key)" }
+                                            if ($hasPermissionErrors) {
+                                                Write-Output ""
+                                                Write-Output "      PERMISSION ISSUE DETECTED:"
+                                                Write-Output "      The current user lacks Azure RBAC permissions for blob storage access."
+                                                Write-Output "      Solutions:"
+                                                Write-Output "        1. Request 'Storage Blob Data Reader' role assignment on this storage account"
+                                                Write-Output "        2. Use storage account key if available: --auth-mode key"
+                                                Write-Output "        3. Access via Azure Portal (uses different permission model)"
+                                                Write-Output "        4. Use service principal with proper storage permissions"
+                                            }
                                         }
                                         
                                     } catch {
