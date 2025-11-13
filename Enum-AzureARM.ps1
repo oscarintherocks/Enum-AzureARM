@@ -122,6 +122,11 @@ $Script:ServicePrincipalMode = $false
 $Script:KeyVaultToken = $null
 $Script:StorageToken = $null
 
+# Global variables for token tenant tracking
+$Script:ARMTokenTenant = $null
+$Script:GraphTokenTenant = $null
+$Script:SubscriptionTenant = $null
+
 # Display help if requested or if no authentication method is provided
 if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId) -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId))) {
     Write-Host "`nAzure ARM/Graph Enumeration Script v2.0`n" -ForegroundColor Cyan
@@ -536,7 +541,14 @@ function Invoke-ARMRequest {
             }
             
             if ($statusCode -eq 'Unauthorized' -or $statusCode -eq 'Forbidden') {
-                Write-Error "Authentication/Authorization failed for: $Uri"
+                # Provide enhanced error guidance for auth failures
+                if ($statusCode -eq 'Unauthorized' -and $Script:ARMTokenTenant -and $Script:SubscriptionTenant -and $Script:ARMTokenTenant -ne $Script:SubscriptionTenant) {
+                    Write-Error "Authentication failed: Token tenant mismatch detected. ARM token is for tenant '$Script:ARMTokenTenant' but subscription is in tenant '$Script:SubscriptionTenant'. Please get a token for the correct tenant."
+                } elseif ($statusCode -eq 'Unauthorized') {
+                    Write-Error "Authentication failed: ARM token may be expired, invalid, or lacks permissions for: $Uri"
+                } else {
+                    Write-Error "Authorization failed: Insufficient permissions for: $Uri"
+                }
                 return $null
             }
             
@@ -999,6 +1011,103 @@ function Get-AccessTokenFromAzureCLI {
     } catch {
         $result.Error = "Failed to get access tokens from Azure CLI: $($_.Exception.Message)"
         return $result
+    }
+}
+
+function Test-TenantMismatch {
+    <#
+    .SYNOPSIS
+        Detects tenant mismatches between tokens and subscriptions and provides guidance.
+    #>
+    [CmdletBinding()]
+    param()
+    
+    # Only run if we have ARM token tenant info
+    if (-not $Script:ARMTokenTenant) {
+        return
+    }
+    
+    Write-Verbose "Checking for tenant mismatches..."
+    
+    try {
+        # Try to get subscription information to determine the subscription's tenant
+        if ($AccessTokenARM) {
+            Write-Verbose "Discovering accessible subscriptions to check tenant alignment..."
+            
+            $subscriptionsUri = "https://management.azure.com/subscriptions?api-version=2022-12-01"
+            $subscriptions = Invoke-ARMRequest -Uri $subscriptionsUri -SuppressWarnings
+            
+            if ($subscriptions -and $subscriptions.value -and $subscriptions.value.Count -gt 0) {
+                $foundMismatch = $false
+                
+                foreach ($sub in $subscriptions.value) {
+                    if ($sub.tenantId -and $sub.tenantId -ne $Script:ARMTokenTenant) {
+                        $foundMismatch = $true
+                        $Script:SubscriptionTenant = $sub.tenantId
+                        
+                        Write-Host "`n" -NoNewline
+                        Write-Host "TENANT MISMATCH DETECTED" -ForegroundColor Red -BackgroundColor Yellow
+                        Write-Host "=========================" -ForegroundColor Red
+                        Write-Host "Token Tenant:        $Script:ARMTokenTenant" -ForegroundColor Yellow
+                        Write-Host "Subscription Tenant: $($sub.tenantId)" -ForegroundColor Yellow
+                        Write-Host "Subscription:        $($sub.displayName) ($($sub.subscriptionId))" -ForegroundColor Gray
+                        Write-Host ""
+                        
+                        Write-Host "ISSUE EXPLANATION:" -ForegroundColor Cyan
+                        Write-Host "Your ARM token was issued for tenant '$Script:ARMTokenTenant'" -ForegroundColor White
+                        Write-Host "But you're trying to access subscription '$($sub.displayName)' in tenant '$($sub.tenantId)'" -ForegroundColor White
+                        Write-Host "This will result in '401 Unauthorized' errors for ARM API calls." -ForegroundColor Red
+                        Write-Host ""
+                        
+                        Write-Host "SOLUTIONS:" -ForegroundColor Green
+                        Write-Host ""
+                        Write-Host "Option 1: Get ARM token for correct tenant" -ForegroundColor Cyan
+                        Write-Host "  # Azure CLI:" -ForegroundColor Gray
+                        Write-Host "  az login --tenant $($sub.tenantId)" -ForegroundColor White
+                        Write-Host "  az account get-access-token --resource=https://management.azure.com/" -ForegroundColor White
+                        Write-Host ""
+                        Write-Host "  # PowerShell:" -ForegroundColor Gray
+                        Write-Host "  Connect-AzAccount -Tenant '$($sub.tenantId)'" -ForegroundColor White
+                        Write-Host "  `$armToken = (Get-AzAccessToken -ResourceUrl 'https://management.azure.com/').Token" -ForegroundColor White
+                        Write-Host ""
+                        
+                        Write-Host "Option 2: Use Service Principal (if you have SP credentials)" -ForegroundColor Cyan
+                        Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal \" -ForegroundColor White
+                        Write-Host "                       -ApplicationId '<app-id>' \" -ForegroundColor White
+                        Write-Host "                       -ClientSecret '<secret>' \" -ForegroundColor White
+                        Write-Host "                       -TenantId '$($sub.tenantId)'" -ForegroundColor White
+                        Write-Host ""
+                        
+                        Write-Host "Option 3: Continue with Graph-only enumeration (if Graph token is valid)" -ForegroundColor Cyan
+                        if ($Script:GraphTokenTenant -eq $Script:ARMTokenTenant) {
+                            Write-Host "  Your Graph token is for the same tenant as ARM token, but may still work" -ForegroundColor Gray
+                            Write-Host "  for Azure AD enumeration across tenant boundaries." -ForegroundColor Gray
+                        }
+                        Write-Host "  .\Enum-AzureARM.ps1 -AccessTokenGraph '<graph-token>' -GraphOnly" -ForegroundColor White
+                        Write-Host ""
+                        
+                        Write-Host "COMMON SCENARIOS:" -ForegroundColor Yellow
+                        Write-Host "• Guest user accessing resources in another tenant" -ForegroundColor Gray
+                        Write-Host "• Multi-tenant application with wrong tenant-specific token" -ForegroundColor Gray
+                        Write-Host "• Token obtained for home tenant but accessing resource tenant" -ForegroundColor Gray
+                        Write-Host "• B2B collaboration scenario with cross-tenant access" -ForegroundColor Gray
+                        Write-Host ""
+                        
+                        break
+                    }
+                }
+                
+                if (-not $foundMismatch) {
+                    Write-Verbose "No tenant mismatches detected - tokens and subscriptions are aligned"
+                }
+            } else {
+                Write-Verbose "Could not retrieve subscription information to check tenant alignment"
+            }
+        }
+        
+    } catch {
+        Write-Verbose "Could not perform tenant mismatch check: $($_.Exception.Message)"
+        # Don't throw errors here as this is just a diagnostic check
     }
 }
 
@@ -7056,6 +7165,7 @@ function Initialize-Authentication {
                     
                     # Show tenant info
                     if ($claims.tid) {
+                        $Script:ARMTokenTenant = $claims.tid
                         Write-Output "    ARM Token Tenant: $($claims.tid)"
                     }
                 }
@@ -7217,6 +7327,7 @@ function Initialize-Authentication {
             
             # Show tenant info
             if ($claims.tid) {
+                $Script:GraphTokenTenant = $claims.tid
                 Write-Output "    Graph Token Tenant: $($claims.tid)"
             }
         } catch {
@@ -7293,6 +7404,9 @@ function Initialize-Authentication {
         }
         
         Write-Output "  Token validation completed successfully."
+        
+        # Check for tenant mismatches after successful token validation
+        Test-TenantMismatch
     }
     
     if ($UseCurrentUser) {
