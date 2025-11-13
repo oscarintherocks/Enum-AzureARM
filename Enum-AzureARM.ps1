@@ -7730,8 +7730,14 @@ function Initialize-Authentication {
     # Validate that required authentication is available for requested checks
     $authenticationErrors = @()
     
+    # For ARM checks, if using CurrentUser mode and ARM isn't available, just disable ARM checks
     if ($Script:PerformARMChecks -and -not $Script:AuthenticationStatus.ARMToken) {
-        $authenticationErrors += "ARM token required for ARM resource enumeration but not available."
+        if ($UseCurrentUser) {
+            Write-Warning "ARM authentication not available in current user mode. ARM resource enumeration will be skipped."
+            $Script:PerformARMChecks = $false
+        } else {
+            $authenticationErrors += "ARM token required for ARM resource enumeration but not available."
+        }
     }
     
     # For Graph checks, if using CurrentUser mode and Graph isn't available, just disable Graph checks
@@ -7749,8 +7755,25 @@ function Initialize-Authentication {
         throw $errorMessage
     }
     
+    # Check if we have at least one working authentication method
     if (-not $Script:AuthenticationStatus.ARMToken -and -not $Script:AuthenticationStatus.GraphToken) {
-        throw "No valid authentication method available. Cannot proceed with enumeration."
+        if ($UseCurrentUser) {
+            $errorMessage = @"
+No valid authentication method available in current user mode.
+
+Possible solutions:
+1. Connect to Azure PowerShell: Connect-AzAccount
+2. Connect to Microsoft Graph: Connect-MgGraph -Scopes 'User.Read','Directory.Read.All'
+3. Use Azure CLI: az login
+4. Use token-based authentication instead:
+   .\Enum-AzureARM.ps1 -AccessTokenARM `"<arm-token>`" -AccessTokenGraph `"<graph-token>`" -AccountId `"<account-id>`"
+5. Use service principal authentication:
+   .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId `"<app-id>`" -ClientSecret `"<secret>`" -TenantId `"<tenant-id>`"
+"@
+            throw $errorMessage
+        } else {
+            throw "No valid authentication method available. Cannot proceed with enumeration."
+        }
     }
 }
 
