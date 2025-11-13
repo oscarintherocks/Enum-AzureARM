@@ -1,19 +1,54 @@
 <#
 .SYNOPSIS
-    Azure ARM/Graph enumeration with selective token support
+    Azure ARM/Graph enumeration with selective token support and multiple authentication methods
 .DESCRIPTION
-    Enumerate Azure resources and/or Azure AD objects based on provided tokens or service principal credentials.
-    When OutputFile is not specified, generates dynamic filename: accountid_YYYYMMDDHHMMSS_AzureResources.json
+    Comprehensive Azure enumeration tool that supports multiple authentication methods including current user context, 
+    access tokens, and service principal credentials. When OutputFile is not specified, generates dynamic filename: 
+    accountid_YYYYMMDDHHMMSS_AzureResources.json
     
     Supports multiple authentication methods:
     1. Current user context (-UseCurrentUser)
-    2. Access tokens (-AccessTokenARM and/or -AccessTokenGraph with -AccountId)
-    3. Azure CLI service principal (-UseAzureCLI with -ServicePrincipalId, -ServicePrincipalSecret, -TenantId)
-    4. Azure PowerShell service principal (-UseServicePrincipal with -ApplicationId, -ClientSecret, -TenantId)
+       - Uses existing Azure PowerShell or Azure CLI authentication
+       - Requires prior login with Connect-AzAccount or az login
     
-    Azure PowerShell Service Principal automatically extracts ARM, Graph, and Key Vault tokens for enhanced access.
+    2. Access tokens (-AccessTokenARM and/or -AccessTokenGraph with -AccountId)
+       - Direct token-based authentication for ARM and/or Graph APIs
+       - Useful for CTF scenarios or when tokens are obtained through other means
+    
+    3. Azure CLI service principal authentication (recommended for automation)
+       - Method A: -UseAzureCLI with -ServicePrincipalId, -ServicePrincipalSecret, -TenantId
+       - Method B: Direct parameters: -ServicePrincipalId, -ServicePrincipalSecret, -TenantId
+       - Uses Azure CLI backend for authentication and token management
+    
+    4. Azure PowerShell service principal authentication (enhanced capabilities)
+       - Parameters: -UseServicePrincipal with -ApplicationId, -ClientSecret, -TenantId
+       - Automatically extracts ARM, Graph, Storage, and Key Vault tokens for comprehensive access
+       - Provides enhanced blob download capabilities with multiple authentication methods
+       - Ideal for comprehensive enumeration when service principal credentials are available
+    
+    Service Principal Authentication Benefits:
+    - Automatic resource-specific token acquisition (Storage: https://storage.azure.com/, Key Vault: https://vault.azure.net/)
+    - Enhanced blob download with 5-tier authentication system
+    - Cross-resource enumeration capabilities
+    - No interactive authentication required (perfect for automation/CTF scenarios)
+    
+.PARAMETER UseServicePrincipal
+    Enables Azure PowerShell service principal authentication mode with enhanced token capabilities
+.PARAMETER ApplicationId
+    Service principal application (client) ID for Azure PowerShell authentication
+.PARAMETER ClientSecret
+    Service principal client secret for Azure PowerShell authentication
+.PARAMETER UseAzureCLI
+    Enables Azure CLI service principal authentication mode
+.PARAMETER ServicePrincipalId
+    Service principal application ID for Azure CLI authentication
+.PARAMETER ServicePrincipalSecret
+    Service principal secret for Azure CLI authentication
+.PARAMETER TenantId
+    Azure Active Directory tenant ID (required for service principal authentication)
 .NOTES
     Version: 2.0 | Outputs to Results\ folder | Dynamic filenames based on account identity
+    Enhanced service principal support with automatic resource-specific token management
 #>
 
 [CmdletBinding()]
@@ -91,34 +126,58 @@ $Script:StorageToken = $null
 if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId) -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId))) {
     Write-Host "`nAzure ARM/Graph Enumeration Script v2.0`n" -ForegroundColor Cyan
     Write-Host "Authentication Methods:" -ForegroundColor Yellow
-    Write-Host "  Current User:"
-    Write-Host "    .\Enum-AzureARM.ps1 -UseCurrentUser"
-    Write-Host "  Access Tokens:"
-    Write-Host "    .\Enum-AzureARM.ps1 -AccessTokenARM <token> -AccountId <id>"
-    Write-Host "    .\Enum-AzureARM.ps1 -AccessTokenGraph <token>"
-    Write-Host "    .\Enum-AzureARM.ps1 -AccessTokenARM <arm> -AccessTokenGraph <graph> -AccountId <id>"
-    Write-Host "  Azure CLI Service Principal:"
-    Write-Host "    .\Enum-AzureARM.ps1 -UseAzureCLI -ServicePrincipalId <appid> -ServicePrincipalSecret <secret> -TenantId <tenantid>"
-    Write-Host "    .\Enum-AzureARM.ps1 -ServicePrincipalId <appid> -ServicePrincipalSecret <secret> -TenantId <tenantid>"
-    Write-Host "  Azure PowerShell Service Principal:"
-    Write-Host "    .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId <appid> -ClientSecret <secret> -TenantId <tenantid>`n"
-    Write-Host "Options:" -ForegroundColor Gray
-    Write-Host "  -OutputFormat json|csv"
-    Write-Host "  -OutputFile <path>"
-    Write-Host "  -GraphOnly (skip ARM enumeration, use Graph token only)"
-    Write-Host "  -Help (this message)`n"
+    Write-Host ""
+    Write-Host "  1. Current User (requires prior authentication):" -ForegroundColor Cyan
+    Write-Host "     .\Enum-AzureARM.ps1 -UseCurrentUser"
+    Write-Host ""
+    Write-Host "  2. Access Tokens (direct token usage):" -ForegroundColor Cyan
+    Write-Host "     .\Enum-AzureARM.ps1 -AccessTokenARM <token> -AccountId <id>"
+    Write-Host "     .\Enum-AzureARM.ps1 -AccessTokenGraph <token>"
+    Write-Host "     .\Enum-AzureARM.ps1 -AccessTokenARM <arm> -AccessTokenGraph <graph> -AccountId <id>"
+    Write-Host ""
+    Write-Host "  3. Azure CLI Service Principal (standard automation):" -ForegroundColor Cyan
+    Write-Host "     .\Enum-AzureARM.ps1 -UseAzureCLI -ServicePrincipalId <appid> -ServicePrincipalSecret <secret> -TenantId <tenantid>"
+    Write-Host "     .\Enum-AzureARM.ps1 -ServicePrincipalId <appid> -ServicePrincipalSecret <secret> -TenantId <tenantid>"
+    Write-Host ""
+    Write-Host "  4. Azure PowerShell Service Principal (enhanced capabilities) " -NoNewline -ForegroundColor Cyan
+    Write-Host "[RECOMMENDED FOR CTF]:" -ForegroundColor Green
+    Write-Host "     .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId <appid> -ClientSecret <secret> -TenantId <tenantid>"
+    Write-Host "     • Automatic resource-specific token acquisition (Storage + Key Vault)" -ForegroundColor Gray
+    Write-Host "     • Enhanced blob download with 5-tier authentication system" -ForegroundColor Gray
+    Write-Host "     • Comprehensive cross-resource enumeration capabilities" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Options:" -ForegroundColor Yellow
+    Write-Host "  -OutputFormat json|csv     (Output format selection)"
+    Write-Host "  -OutputFile <path>         (Custom output file path)"
+    Write-Host "  -GraphOnly                 (Skip ARM enumeration, use Graph token only)"
+    Write-Host "  -Verbose                   (Show detailed operation progress)"
+    Write-Host "  -Help                      (Show this message)`n"
     
-    Write-Host "Examples:" -ForegroundColor Green
-    Write-Host "  # Use Azure CLI service principal from discovered credentials"
-    Write-Host "  .\Enum-AzureARM.ps1 -ServicePrincipalId 12345678-1234-1234-1234-123456789abc \" -ForegroundColor Green
-    Write-Host "                       -ServicePrincipalSecret 'ABC123XyZ456DefGhi789JklMno012PqrStu' \" -ForegroundColor Green
-    Write-Host "                       -TenantId 87654321-4321-4321-4321-cba987654321" -ForegroundColor Green
-    Write-Host "  # Use Azure PowerShell service principal"
-    Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId 12345678-1234-1234-1234-123456789abc \" -ForegroundColor Green
+    Write-Host "Usage Examples:" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Basic enumeration with current user:" -ForegroundColor White
+    Write-Host "  .\Enum-AzureARM.ps1 -UseCurrentUser -Verbose" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  CTF/Red Team: Enhanced service principal enumeration (recommended):" -ForegroundColor White
+    Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal \" -ForegroundColor Green
+    Write-Host "                       -ApplicationId '12345678-1234-1234-1234-123456789abc' \" -ForegroundColor Green
     Write-Host "                       -ClientSecret 'ABC123XyZ456DefGhi789JklMno012PqrStu' \" -ForegroundColor Green
-    Write-Host "                       -TenantId 87654321-4321-4321-4321-cba987654321`n" -ForegroundColor Green
+    Write-Host "                       -TenantId '87654321-4321-4321-4321-cba987654321'" -ForegroundColor Green
+    Write-Host "  # Automatically gets Storage + Key Vault tokens for blob downloads" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Standard service principal with Azure CLI:" -ForegroundColor White
+    Write-Host "  .\Enum-AzureARM.ps1 -ServicePrincipalId '12345678-1234-1234-1234-123456789abc' \" -ForegroundColor Green
+    Write-Host "                       -ServicePrincipalSecret 'ABC123XyZ456DefGhi789JklMno012PqrStu' \" -ForegroundColor Green
+    Write-Host "                       -TenantId '87654321-4321-4321-4321-cba987654321'" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Graph-only enumeration with existing token:" -ForegroundColor White
+    Write-Host "  .\Enum-AzureARM.ps1 -AccessTokenGraph '<graph_token>' -GraphOnly" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Custom output and format:" -ForegroundColor White
+    Write-Host "  .\Enum-AzureARM.ps1 -UseCurrentUser -OutputFormat csv -OutputFile 'MyReport.csv'" -ForegroundColor Green
+    Write-Host "`n"
     
-    if (-not $Help -and -not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId)) {
+    if (-not $Help -and -not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId) -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId)) {
         Write-Host "Error: No authentication method provided." -ForegroundColor Red
     }
     exit 0
