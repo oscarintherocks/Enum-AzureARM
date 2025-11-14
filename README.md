@@ -36,7 +36,8 @@ This magnificent beast of a script will enumerate Azure resources faster than yo
 - 📊 **Generates beautiful reports** that will make your boss think you're a wizard
 - 🎭 **Multiple authentication methods** including **advanced service principal support**
 - 🚀 **Automatic resource token acquisition** (Storage + Key Vault tokens) in service principal mode
-- 🚫 **SSL bypass capabilities** for those special CTF moments when certificates are more like suggestions
+- �️ **Smart subscription management** with test subscription detection and interactive selection ⭐ **NEW!**
+- �🚫 **SSL bypass capabilities** for those special CTF moments when certificates are more like suggestions
 - 🗣️ **Verbose output** with smart error handling and guidance for manual token retrieval
 - 🎯 **CTF/Red Team optimized** with comprehensive enumeration and cross-resource correlation
 
@@ -54,6 +55,9 @@ Perfect for when you've already authenticated with Azure PowerShell or Azure CLI
 
 # Verbose mode - see everything that's happening
 .\Enum-AzureARM.ps1 -UseCurrentUser -Verbose
+
+# Graph-only enumeration (when no ARM subscription access available)
+.\Enum-AzureARM.ps1 -UseCurrentUser -AllowNoSubscription
 ```
 
 #### 2. **Service Principal Authentication** 🚀 **[RECOMMENDED FOR CTF/RED TEAM]**
@@ -113,6 +117,9 @@ When you already have tokens from other sources:
 
 # Just ARM enumeration
 .\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccountId $userId
+
+# Allow enumeration without subscription (Graph-only mode)
+.\Enum-AzureARM.ps1 -AccessTokenGraph $graphToken -AllowNoSubscription
 ```
 
 ### 🎯 **Real-World Scenarios**
@@ -152,6 +159,75 @@ When you already have tokens from other sources:
 ```powershell
 # When you only need Azure AD enumeration
 .\Enum-AzureARM.ps1 -AccessTokenGraph $discoveredGraphToken -GraphOnly -Verbose
+```
+
+---
+
+## 🎯 **Smart Subscription Management** ⭐ **NEW!**
+
+The script now includes intelligent subscription selection and management features:
+
+### 🛡️ **Test Subscription Protection**
+
+Automatically detects test/demo/trial subscriptions and warns before using them:
+
+```powershell
+# The script will detect patterns like:
+# - "Test Company" (common test subscription name)
+# - Any subscription with "test", "demo", "trial" in the name
+# - Prompts user for confirmation before proceeding
+
+WARNING: Current Azure context is using subscription 'Test Company' - this appears to be a test/demo subscription
+Do you want to continue with this subscription?
+Default: No (timeout: 10s) [y/N]
+```
+
+### 🎮 **Interactive Subscription Selection**
+
+When multiple subscriptions are available, get a user-friendly menu:
+
+```powershell
+📋 Multiple Azure subscriptions found:
+1. Production-Environment (12345678-1234-1234-1234-123456789abc)
+2. Development-Testing (87654321-4321-4321-4321-cba987654321)
+3. Secure-Environment (11111111-2222-3333-4444-555555555555)
+4. Continue without subscription (Graph-only)
+0. Exit
+
+Select subscription (1-4, or 0 to exit): 
+```
+
+### 🚫 **AllowNoSubscription Parameter**
+
+New parameter for Graph-only enumeration when ARM access isn't available:
+
+```powershell
+# When you only have Graph permissions or want to avoid ARM enumeration
+.\Enum-AzureARM.ps1 -UseCurrentUser -AllowNoSubscription
+
+# Perfect for scenarios where:
+# ✅ You only need Azure AD enumeration
+# ✅ ARM subscription access is denied
+# ✅ You want to avoid test/demo subscriptions
+# ✅ Compliance requirements restrict ARM access
+```
+
+### ⚡ **Smart Timeout Handling**
+
+- **10-second timeout** for subscription prompts with clear defaults
+- **User can cancel** or select different options anytime  
+- **Non-interactive mode** support for automated scenarios
+- **Graceful fallback** to Graph-only when ARM access fails
+
+### 🔄 **Enhanced User Experience**
+
+```powershell
+# The script guides you through subscription selection:
+🔍 Discovering available Azure subscriptions...
+✅ Selected: Production-Environment (12345678-1234-1234-1234-123456789abc)
+🔄 Let's select a different subscription...
+⚠️  Timeout reached. Using default: No
+🎯 Continuing with Graph-only enumeration...
 ```
 
 ---
@@ -384,6 +460,15 @@ Want to make these scripts even better? Here's how not to mess things up:
 
 ## 📈 Version History (The Journey)
 
+### Version 2.1 - "The Smart Subscription Update" ⭐ **LATEST**
+
+- **🛡️ Smart subscription management** with test subscription detection
+- **🎮 Interactive subscription selection** menu with timeout handling
+- **🚫 AllowNoSubscription parameter** for Graph-only enumeration
+- **⚡ Enhanced error handling** - changed Write-Error to Write-Warning for better flow
+- **🔄 Graceful fallback mechanisms** when ARM access fails
+- **📋 User-friendly prompts** with clear guidance and defaults
+
 ### Version 2.0 - "The Great Refactoring"
 
 - Made everything actually work properly
@@ -422,12 +507,15 @@ For more details read the [LICENSE](LICENSE) file
 | **Standard Automation** | `.\Enum-AzureARM.ps1 -ServicePrincipalId '<ID>' -ServicePrincipalSecret '<SECRET>' -TenantId '<TENANT>'` | Azure CLI backend |
 | **Token Only** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<TOKEN>' -AccountId '<ID>'` | Have tokens from other source |
 | **Graph Only** | `.\Enum-AzureARM.ps1 -AccessTokenGraph '<TOKEN>' -GraphOnly` | Azure AD enumeration only |
+| **⭐ No Subscription** | `.\Enum-AzureARM.ps1 -UseCurrentUser -AllowNoSubscription` | **Graph-only + smart subscription handling** |
 
 **🎯 Pro Tips:**
 
 - Use `-UseServicePrincipal` for **enhanced blob downloads** and **automatic resource tokens**
 - Add `-Verbose` to see detailed progress and troubleshooting info
+- Use `-AllowNoSubscription` for **Graph-only enumeration** when ARM access is limited
 - Service principal mode gets Storage + Key Vault tokens automatically!
+- **Smart subscription selection** prevents accidental enumeration of test environments
 
 ---
 
