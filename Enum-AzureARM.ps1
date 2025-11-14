@@ -100,7 +100,15 @@ param(
     [string]$ClientSecret,
 
     [Parameter(Mandatory=$false)]
-    [switch]$GraphOnly
+    [switch]$GraphOnly,
+
+    # Interactive authentication helper
+    [Parameter(Mandatory=$false)]
+    [switch]$NoInteractiveAuth,
+
+    # Allow running without subscription access
+    [Parameter(Mandatory=$false)]
+    [switch]$AllowNoSubscription
 )
 
 # Error action preference for better error handling
@@ -126,6 +134,9 @@ $Script:StorageToken = $null
 $Script:ARMTokenTenant = $null
 $Script:GraphTokenTenant = $null
 $Script:SubscriptionTenant = $null
+
+# Global timeout for user interaction prompts (in seconds)
+$Script:UserPromptTimeout = 10
 
 # Display help if requested or if no authentication method is provided
 if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId) -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId))) {
@@ -155,6 +166,8 @@ if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessT
     Write-Host "  -OutputFormat json|csv     (Output format selection)"
     Write-Host "  -OutputFile <path>         (Custom output file path)"
     Write-Host "  -GraphOnly                 (Skip ARM enumeration, use Graph token only)"
+    Write-Host "  -NoInteractiveAuth         (Disable interactive authentication helpers)"
+    Write-Host "  -AllowNoSubscription       (Allow Graph-only enumeration when no subscription access)"
     Write-Host "  -Verbose                   (Show detailed operation progress)"
     Write-Host "  -Help                      (Show this message)`n"
     
@@ -457,6 +470,343 @@ if ($OutputFile -notmatch "^Results\\") {
 
 #region Helper Functions
 
+function Request-UserConfirmation {
+    <#
+    .SYNOPSIS
+        Prompts the user for confirmation with a timeout. Default is NO.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Message,
+        
+        [Parameter(Mandatory=$false)]
+        [int]$TimeoutSeconds = $Script:UserPromptTimeout,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$DefaultYes
+    )
+    
+    $defaultChoice = if ($DefaultYes) { "Yes" } else { "No" }
+    $choices = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
+    
+    Write-Host ""
+    Write-Host $Message -ForegroundColor Yellow
+    Write-Host "Default: $defaultChoice (timeout: ${TimeoutSeconds}s) $choices" -ForegroundColor Gray
+    Write-Host -NoNewline "Your choice: " -ForegroundColor Cyan
+    
+    # Start a job to handle the timeout
+    $job = Start-Job -ScriptBlock {
+        param($timeout)
+        Start-Sleep -Seconds $timeout
+        return "TIMEOUT"
+    } -ArgumentList $TimeoutSeconds
+    
+    $response = $null
+    $startTime = Get-Date
+    
+    while ((Get-Date) - $startTime -lt [TimeSpan]::FromSeconds($TimeoutSeconds)) {
+        if ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true)
+            if ($key.Key -eq 'Enter') {
+                $response = ""
+                break
+            } elseif ($key.KeyChar -match '^[YyNn]$') {
+                $response = $key.KeyChar.ToString().ToUpper()
+                Write-Host $response
+                break
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    
+    Stop-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -ErrorAction SilentlyContinue
+    
+    if ($null -eq $response) {
+        Write-Host ""
+        Write-Host "Timeout reached. Using default: $defaultChoice" -ForegroundColor Yellow
+        $response = ""
+    }
+    
+    # Determine the result
+    if ([string]::IsNullOrEmpty($response)) {
+        return $DefaultYes.IsPresent
+    } elseif ($response -eq "Y") {
+        return $true
+    } else {
+        return $false
+    }
+}
+
+function Invoke-AuthenticationFix {
+    <#
+    .SYNOPSIS
+        Attempts to fix authentication issues automatically.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateSet("ARM", "Graph", "Both")]
+        [string]$FixType,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$Interactive
+    )
+    
+    $result = @{
+        Success = $false
+        ARMFixed = $false
+        GraphFixed = $false
+        Message = ""
+    }
+    
+    try {
+        Write-Host ""
+        Write-Host "🔧 AUTHENTICATION HELPER" -ForegroundColor Cyan
+        Write-Host "=========================" -ForegroundColor Cyan
+        
+        if ($FixType -eq "ARM" -or $FixType -eq "Both") {
+            Write-Host "Issue: ARM access token could not be retrieved from current context" -ForegroundColor Yellow
+            Write-Host "This usually means you're not authenticated to Azure PowerShell or Azure CLI" -ForegroundColor Gray
+            Write-Host ""
+            
+            if ($Interactive.IsPresent) {
+                $tryFix = Request-UserConfirmation -Message "Would you like me to attempt automatic authentication to Azure?"
+                
+                if ($tryFix) {
+                    Write-Host "🔄 Attempting to fix Azure authentication..." -ForegroundColor Green
+                    
+                    # Try Connect-AzAccount first
+                    try {
+                        Write-Host "Trying Azure PowerShell authentication (Connect-AzAccount)..." -ForegroundColor Cyan
+                        $azContext = Connect-AzAccount -ErrorAction Stop
+                        if ($azContext) {
+                            Write-Host "✅ Azure PowerShell authentication successful!" -ForegroundColor Green
+                            $result.ARMFixed = $true
+                            $result.Success = $true
+                        }
+                    } catch {
+                        Write-Host "❌ Azure PowerShell authentication failed: $($_.Exception.Message)" -ForegroundColor Red
+                        
+                        # Try Azure CLI as fallback
+                        try {
+                            Write-Host "Trying Azure CLI authentication (az login)..." -ForegroundColor Cyan
+                            $azLogin = az login --output json 2>&1
+                            if ($LASTEXITCODE -eq 0) {
+                                Write-Host "✅ Azure CLI authentication successful!" -ForegroundColor Green
+                                $result.ARMFixed = $true
+                                $result.Success = $true
+                            }
+                        } catch {
+                            Write-Host "❌ Azure CLI authentication also failed: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                } else {
+                    Write-Host "Authentication fix skipped by user." -ForegroundColor Gray
+                }
+            }
+        }
+        
+        if ($FixType -eq "Graph" -or $FixType -eq "Both") {
+            Write-Host "Issue: Microsoft Graph access is not available" -ForegroundColor Yellow
+            Write-Host "This usually means you're not connected to Microsoft Graph" -ForegroundColor Gray
+            Write-Host ""
+            
+            if ($Interactive.IsPresent) {
+                $tryGraphFix = Request-UserConfirmation -Message "Would you like me to attempt Microsoft Graph authentication?"
+                
+                if ($tryGraphFix) {
+                    Write-Host "🔄 Attempting to fix Microsoft Graph authentication..." -ForegroundColor Green
+                    
+                    try {
+                        Write-Host "Connecting to Microsoft Graph with basic permissions..." -ForegroundColor Cyan
+                        Connect-MgGraph -Scopes "User.Read", "Directory.Read.All" -NoWelcome -ErrorAction Stop
+                        Write-Host "✅ Microsoft Graph authentication successful!" -ForegroundColor Green
+                        $result.GraphFixed = $true
+                        $result.Success = $true
+                    } catch {
+                        Write-Host "❌ Microsoft Graph authentication failed: $($_.Exception.Message)" -ForegroundColor Red
+                    }
+                } else {
+                    Write-Host "Graph authentication fix skipped by user." -ForegroundColor Gray
+                }
+            }
+        }
+        
+        if ($result.Success) {
+            Write-Host ""
+            Write-Host "🎉 Authentication fix completed! Please run the script again." -ForegroundColor Green
+            $result.Message = "Authentication successfully fixed. Re-run the script to use new authentication."
+        } else {
+            Write-Host ""
+            Write-Host "⚠️ Automatic fix was not successful or was skipped." -ForegroundColor Yellow
+            Write-Host "Manual authentication options:" -ForegroundColor Cyan
+            Write-Host "  1. Azure PowerShell: Connect-AzAccount" -ForegroundColor White
+            Write-Host "  2. Azure CLI: az login" -ForegroundColor White
+            Write-Host "  3. Microsoft Graph: Connect-MgGraph -Scopes 'User.Read','Directory.Read.All'" -ForegroundColor White
+            Write-Host "  4. Use token-based authentication with -AccessTokenARM and -AccessTokenGraph parameters" -ForegroundColor White
+            $result.Message = "Automatic fix not applied. Manual authentication required."
+        }
+        
+    } catch {
+        $result.Message = "Error during authentication fix: $($_.Exception.Message)"
+        Write-Host "❌ Error during authentication fix: $($_.Exception.Message)" -ForegroundColor Red
+    }
+    
+    return $result
+}
+
+function Select-AzureSubscription {
+    <#
+    .SYNOPSIS
+        Interactive subscription selection when multiple subscriptions are available.
+    .DESCRIPTION
+        Lists available Azure subscriptions and prompts user to select one, with fallback to first accessible subscription.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$AccessToken,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$AllowNoSubscription,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$NonInteractive
+    )
+    
+    $result = @{
+        SubscriptionId = $null
+        SubscriptionName = $null
+        TenantId = $null
+        Success = $false
+        UserCancelled = $false
+    }
+    
+    try {
+        Write-Host "🔍 Discovering available Azure subscriptions..." -ForegroundColor Cyan
+        
+        # Get available subscriptions
+        $subscriptions = Invoke-RestMethod -Uri "https://management.azure.com/subscriptions?api-version=2022-12-01" -Headers @{
+            'Authorization' = "Bearer $AccessToken"
+            'Content-Type' = 'application/json'
+        } -Method GET
+        
+        if (-not $subscriptions -or -not $subscriptions.value -or $subscriptions.value.Count -eq 0) {
+            if ($AllowNoSubscription) {
+                Write-Host "⚠️ No accessible subscriptions found, but continuing with Graph-only enumeration..." -ForegroundColor Yellow
+                $result.Success = $true
+                return $result
+            } else {
+                Write-Host "❌ No accessible Azure subscriptions found." -ForegroundColor Red
+                Write-Host "Use -AllowNoSubscription to continue with Graph-only enumeration." -ForegroundColor Gray
+                return $result
+            }
+        }
+        
+        $subList = $subscriptions.value | Sort-Object displayName
+        
+        if ($subList.Count -eq 1) {
+            # Only one subscription available - use it automatically
+            $selectedSub = $subList[0]
+            Write-Host "✅ Found single accessible subscription: " -NoNewline -ForegroundColor Green
+            Write-Host "$($selectedSub.displayName) ($($selectedSub.subscriptionId))" -ForegroundColor White
+            
+            $result.SubscriptionId = $selectedSub.subscriptionId
+            $result.SubscriptionName = $selectedSub.displayName
+            $result.TenantId = $selectedSub.tenantId
+            $result.Success = $true
+            return $result
+        }
+        
+        if ($NonInteractive) {
+            # Non-interactive mode - use first subscription
+            $selectedSub = $subList[0]
+            Write-Host "⚠️ Non-interactive mode: Using first available subscription: " -NoNewline -ForegroundColor Yellow
+            Write-Host "$($selectedSub.displayName) ($($selectedSub.subscriptionId))" -ForegroundColor White
+            
+            $result.SubscriptionId = $selectedSub.subscriptionId
+            $result.SubscriptionName = $selectedSub.displayName
+            $result.TenantId = $selectedSub.tenantId
+            $result.Success = $true
+            return $result
+        }
+        
+        # Multiple subscriptions - show selection menu
+        Write-Host ""
+        Write-Host "📋 Multiple Azure subscriptions found:" -ForegroundColor Cyan
+        Write-Host "=" * 50 -ForegroundColor Gray
+        
+        for ($i = 0; $i -lt $subList.Count; $i++) {
+            $sub = $subList[$i]
+            Write-Host "$($i + 1). " -NoNewline -ForegroundColor Yellow
+            Write-Host "$($sub.displayName)" -NoNewline -ForegroundColor White
+            Write-Host " ($($sub.subscriptionId))" -ForegroundColor Gray
+        }
+        
+        if ($AllowNoSubscription) {
+            Write-Host "$($subList.Count + 1). " -NoNewline -ForegroundColor Yellow
+            Write-Host "Continue without subscription (Graph-only)" -ForegroundColor Cyan
+        }
+        
+        Write-Host "0. " -NoNewline -ForegroundColor Red
+        Write-Host "Exit" -ForegroundColor Red
+        Write-Host ""
+        
+        # Get user selection
+        do {
+            $maxChoice = if ($AllowNoSubscription) { $subList.Count + 1 } else { $subList.Count }
+            Write-Host "Select subscription (1-$maxChoice, or 0 to exit): " -NoNewline -ForegroundColor Cyan
+            
+            $selection = $null
+            if ([Console]::IsInputRedirected) {
+                # Fallback for non-interactive environments
+                $selection = "1"
+                Write-Host $selection
+            } else {
+                $selection = Read-Host
+            }
+            
+            if ($selection -eq "0") {
+                Write-Host "❌ Operation cancelled by user." -ForegroundColor Red
+                $result.UserCancelled = $true
+                return $result
+            }
+            
+            if ($AllowNoSubscription -and $selection -eq ($subList.Count + 1).ToString()) {
+                Write-Host "✅ Continuing with Graph-only enumeration..." -ForegroundColor Green
+                $result.Success = $true
+                return $result
+            }
+            
+            $selectionNum = 0
+            if ([int]::TryParse($selection, [ref]$selectionNum) -and $selectionNum -ge 1 -and $selectionNum -le $subList.Count) {
+                $selectedSub = $subList[$selectionNum - 1]
+                
+                Write-Host "✅ Selected: " -NoNewline -ForegroundColor Green
+                Write-Host "$($selectedSub.displayName) ($($selectedSub.subscriptionId))" -ForegroundColor White
+                
+                $result.SubscriptionId = $selectedSub.subscriptionId
+                $result.SubscriptionName = $selectedSub.displayName
+                $result.TenantId = $selectedSub.tenantId
+                $result.Success = $true
+                return $result
+            } else {
+                Write-Host "❌ Invalid selection. Please enter a number between 1 and $maxChoice (or 0 to exit)." -ForegroundColor Red
+            }
+        } while ($true)
+        
+    } catch {
+        Write-Host "❌ Error discovering subscriptions: $($_.Exception.Message)" -ForegroundColor Red
+        if ($AllowNoSubscription) {
+            Write-Host "⚠️ Continuing with Graph-only enumeration..." -ForegroundColor Yellow
+            $result.Success = $true
+        }
+        return $result
+    }
+}
+
 function Invoke-ARMRequest {
     <#
     .SYNOPSIS
@@ -585,7 +935,7 @@ function Invoke-ARMRequest {
             }
             
             if ($attempt -eq $RetryCount) {
-                Write-Error "ARM call permanently failed after $RetryCount attempts: $Uri"
+                Write-Warning "ARM call permanently failed after $RetryCount attempts: $Uri"
                 return $null
             }
             
@@ -2049,7 +2399,7 @@ function Show-QuickStats {
         [PSCustomObject]@{ 'Resource Type' = 'Storage Accounts'; 'Count' = $Summary.StorageAccounts }
         [PSCustomObject]@{ 'Resource Type' = 'Key Vaults'; 'Count' = $Summary.KeyVaults }
         [PSCustomObject]@{ 'Resource Type' = 'Web Apps'; 'Count' = $Summary.WebApps }
-        [PSCustomObject]@{ 'Resource Type' = 'Function Apps'; 'Count' = $Summary.AzureFunctions }
+        [PSCustomObject]@{ 'Resource Type' = 'Function Apps'; 'Count' = $Summary.FunctionApps }
         [PSCustomObject]@{ 'Resource Type' = 'Public IPs'; 'Count' = $Summary.PublicIPs }
         [PSCustomObject]@{ 'Resource Type' = 'Role Assignments'; 'Count' = $Summary.SubscriptionRoleAssignments }
         [PSCustomObject]@{ 'Resource Type' = 'Resource Groups'; 'Count' = $Summary.ResourceGroups }
@@ -4883,7 +5233,28 @@ function Get-ApplicationDetails {
                         DisplayName = $_.displayName
                         StartDateTime = $_.startDateTime
                         EndDateTime = $_.endDateTime
-                        CustomKeyIdentifier = if ($_.customKeyIdentifier) { [System.Convert]::ToBase64String($_.customKeyIdentifier) } else { $null }
+                        CustomKeyIdentifier = if ($_.customKeyIdentifier) { 
+                            try {
+                                # Handle hex string conversion to Base64
+                                if ($_.customKeyIdentifier -is [string] -and $_.customKeyIdentifier.Length % 2 -eq 0) {
+                                    # Convert hex string to byte array
+                                    $byteArray = [byte[]]::new($_.customKeyIdentifier.Length / 2)
+                                    for ($i = 0; $i -lt $_.customKeyIdentifier.Length; $i += 2) {
+                                        $byteArray[$i / 2] = [Convert]::ToByte($_.customKeyIdentifier.Substring($i, 2), 16)
+                                    }
+                                    [System.Convert]::ToBase64String($byteArray)
+                                } elseif ($_.customKeyIdentifier -is [byte[]]) {
+                                    # Already a byte array
+                                    [System.Convert]::ToBase64String($_.customKeyIdentifier)
+                                } else {
+                                    # Fallback - return as string
+                                    $_.customKeyIdentifier.ToString()
+                                }
+                            } catch {
+                                # If conversion fails, return the original value as string
+                                $_.customKeyIdentifier.ToString()
+                            }
+                        } else { $null }
                     }
                 }
             }
@@ -7433,6 +7804,30 @@ function Initialize-Authentication {
                 Write-Verbose "ARM access token acquired successfully"
             } else {
                 Write-Warning "Could not acquire ARM access token from current Az context."
+                
+                # Offer to fix authentication automatically (if interactive mode is enabled)
+                if (-not $NoInteractiveAuth) {
+                    $fixResult = Invoke-AuthenticationFix -FixType "ARM" -Interactive
+                if ($fixResult.Success -and $fixResult.ARMFixed) {
+                    # Try to get the token again after successful authentication
+                    try {
+                        $tokenRetry = Get-AzAccessToken -ResourceUrl "https://management.azure.com/" -ErrorAction Stop
+                        if ($tokenRetry -and $tokenRetry.Token) {
+                            if ($tokenRetry.Token -is [System.Security.SecureString]) {
+                                $plainToken = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($tokenRetry.Token))
+                                $AccessTokenARM = $plainToken
+                            } else {
+                                $AccessTokenARM = $tokenRetry.Token
+                            }
+                            $Script:AuthenticationStatus.AzContext = $true
+                            $Script:AuthenticationStatus.ARMToken = $true
+                            Write-Host "✅ ARM access token successfully retrieved after authentication fix!" -ForegroundColor Green
+                        }
+                    } catch {
+                        Write-Verbose "Could not retrieve ARM token even after authentication fix: $($_.Exception.Message)"
+                    }
+                }
+                }
             }
             
         } catch {
@@ -7461,6 +7856,20 @@ function Initialize-Authentication {
                     } catch {
                         Write-Verbose "Could not connect to Microsoft Graph: $($_.Exception.Message)"
                         Write-Verbose "Graph features will be limited to ARM API calls only."
+                        
+                        # Offer to fix Microsoft Graph authentication (if interactive mode is enabled)
+                        if (-not $NoInteractiveAuth) {
+                            $graphFixResult = Invoke-AuthenticationFix -FixType "Graph" -Interactive
+                            if ($graphFixResult.Success -and $graphFixResult.GraphFixed) {
+                            # Check if connection is now available
+                            $contextMgRetry = Get-MgContext -ErrorAction SilentlyContinue
+                            if ($contextMgRetry) {
+                                $Script:AuthenticationStatus.GraphContext = $true
+                                $Script:AuthenticationStatus.GraphToken = $true
+                                Write-Host "✅ Microsoft Graph connection successfully established after authentication fix!" -ForegroundColor Green
+                            }
+                        }
+                        }
                     }
                 }
             } else {
@@ -8300,71 +8709,93 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
         $tenantId = $null
         $subscriptionId = $null
         $subscriptionName = $null
+        $subscriptionSelected = $false
         
-        # Try to get context or discover accessible subscriptions
+        # Check if there's an existing valid context that user might want to keep
         if ($null -ne $context -and $context.Subscription -and $context.Subscription.Id) {
             $tenantId = $context.Tenant.Id
             $subscriptionId = $context.Subscription.Id
             $subscriptionName = $context.Subscription.Name
             
-            Write-Output "Tenant ID: $tenantId"
-            Write-Output "Subscription: $subscriptionName ($subscriptionId)"
-        }
-        else {
-            Write-Warning "No valid Azure subscription context found. Attempting subscription discovery..."
+            # Check if this might be an unexpected/test context
+            $isTestSubscription = $subscriptionName -like "*test*" -or $subscriptionName -like "*demo*" -or $subscriptionName -like "*trial*"
             
-            # Try to discover accessible subscriptions
-            try {
-                Write-Verbose "Discovering accessible subscriptions..."
-                $subscriptions = Invoke-RestMethod -Uri "https://management.azure.com/subscriptions?api-version=2022-12-01" -Headers @{
-                    'Authorization' = "Bearer $accessToken"
-                    'Content-Type' = 'application/json'
-                } -Method GET
+            if ($isTestSubscription -and -not $NoInteractiveAuth) {
+                Write-Warning "Current Azure context is using subscription '$subscriptionName' - this appears to be a test/demo subscription"
+                Write-Output "Tenant ID: $tenantId"
+                Write-Output "Subscription: $subscriptionName ($subscriptionId)"
+                Write-Output ""
                 
-                if ($subscriptions -and $subscriptions.value -and $subscriptions.value.Count -gt 0) {
-                    $firstSub = $subscriptions.value[0]
-                    $tenantId = $firstSub.tenantId
-                    $subscriptionId = $firstSub.subscriptionId
-                    $subscriptionName = $firstSub.displayName
-                    
-                    Write-Output "Discovered accessible subscription:"
-                    Write-Output "Tenant ID: $tenantId"
-                    Write-Output "Subscription: $subscriptionName ($subscriptionId)"
-                    
-                    # Try to set context to discovered subscription
-                    try {
-                        Set-AzContext -SubscriptionId $subscriptionId -TenantId $tenantId -ErrorAction SilentlyContinue | Out-Null
-                        Write-Verbose "Successfully set context to discovered subscription"
-                    }
-                    catch {
-                        Write-Verbose "Could not set context, but will continue with discovered subscription info"
-                    }
+                $continueWithCurrent = Request-UserConfirmation -Message "Do you want to continue with this subscription?"
+                if (-not $continueWithCurrent) {
+                    Write-Host "🔄 Let's select a different subscription..." -ForegroundColor Cyan
+                    $context = $null  # Force subscription selection
                 }
-                else {
-                    Write-Warning "No accessible subscriptions found. Continuing with Graph enumeration only."
-                    $tenantId = "Unknown"
-                    $subscriptionId = "None"
-                    $subscriptionName = "No Access"
-                }
+            } elseif ($isTestSubscription -and $NoInteractiveAuth) {
+                Write-Warning "Using test/demo subscription '$subscriptionName' in non-interactive mode"
+                Write-Output "Use -AllowNoSubscription to bypass subscription selection, or run interactively to choose a different subscription"
+                Write-Output "Tenant ID: $tenantId"
+                Write-Output "Subscription: $subscriptionName ($subscriptionId)"
+            } else {
+                Write-Output "Using Azure PowerShell Context:"
+                Write-Output "Tenant ID: $tenantId"
+                Write-Output "Subscription: $subscriptionName ($subscriptionId)"
             }
-            catch {
-                Write-Warning "Failed to discover subscriptions: $($_.Exception.Message)"
+            $subscriptionSelected = $true
+        }
+        
+        # If no valid context or user chose to select different subscription
+        if ($null -eq $context -or -not $subscriptionSelected) {
+            Write-Host "🔍 No valid Azure subscription context found or subscription change requested..." -ForegroundColor Yellow
+            
+            # Use the subscription selection function
+            $selectionResult = Select-AzureSubscription -AccessToken $Script:AccessTokenARM -AllowNoSubscription:$AllowNoSubscription -NonInteractive:$NoInteractiveAuth
+            
+            if ($selectionResult.UserCancelled) {
+                Write-Host "❌ Operation cancelled by user. Exiting..." -ForegroundColor Red
+                return
+            }
+            
+            if (-not $selectionResult.Success -and -not $AllowNoSubscription) {
+                Write-Host "❌ No subscription selected and -AllowNoSubscription not specified. Exiting..." -ForegroundColor Red
+                Write-Host "Use -AllowNoSubscription to continue with Graph-only enumeration." -ForegroundColor Gray
+                return
+            }
+            
+            if ($selectionResult.SubscriptionId) {
+                $tenantId = $selectionResult.TenantId
+                $subscriptionId = $selectionResult.SubscriptionId
+                $subscriptionName = $selectionResult.SubscriptionName
                 
-                # Try to get tenant from token claims if possible
+                Write-Output ""
+                Write-Output "Selected subscription details:"
+                Write-Output "Tenant ID: $tenantId"
+                Write-Output "Subscription: $subscriptionName ($subscriptionId)"
+                
+                # Try to set the context for future operations
+                try {
+                    Set-AzContext -SubscriptionId $subscriptionId -TenantId $tenantId -ErrorAction SilentlyContinue | Out-Null
+                    Write-Verbose "Successfully set Azure context to selected subscription"
+                } catch {
+                    Write-Verbose "Could not set Azure context, but will continue with selected subscription info"
+                }
+            } else {
+                # No subscription selected - Graph-only mode
+                Write-Output "Continuing with Graph-only enumeration (no Azure subscription access)"
+                
+                # Try to get tenant from token claims
                 try {
                     $tokenPayload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($accessToken.Split('.')[1]))
                     $claims = $tokenPayload | ConvertFrom-Json
                     $tenantId = $claims.tid
-                    Write-Output "Extracted tenant from token: $tenantId"
-                }
-                catch {
+                    Write-Output "Tenant ID: $tenantId (from token)"
+                } catch {
                     $tenantId = "Unknown"
+                    Write-Output "Tenant ID: Unknown"
                 }
                 
                 $subscriptionId = "None"
-                $subscriptionName = "No Access"
-                Write-Output "Tenant ID: $tenantId"
-                Write-Output "Subscription: $subscriptionName ($subscriptionId)"
+                $subscriptionName = "Graph-Only Mode"
             }
         }
         
@@ -8375,6 +8806,33 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
         
         # Continue with enumeration if we have valid identifiers
         if ($subscriptionId -and $subscriptionId -ne "None") {
+            # First, test subscription access before attempting full enumeration
+            Write-Output "`nTesting subscription access..."
+            Write-Verbose "Testing access to subscription: $subscriptionId"
+            $testUri = "https://management.azure.com/subscriptions/$subscriptionId" + "?api-version=2022-12-01"
+            Write-Verbose "Test URI: $testUri"
+            try {
+                $accessTest = Invoke-ARMRequest -Uri $testUri
+                if ($accessTest -and $accessTest.subscriptionId) {
+                    Write-Output "Subscription access confirmed: $($accessTest.displayName)"
+                } else {
+                    throw "Unable to access subscription information"
+                }
+            } catch {
+                if ($_.Exception.Message -like "*401*" -or $_.Exception.Message -like "*Unauthorized*") {
+                    Write-Warning "ACCESS DENIED: No permissions to access subscription '$subscriptionName' ($subscriptionId)"
+                    Write-Warning "This may be a cached context from a previous session. Consider running:"
+                    Write-Warning "  Clear-AzContext -Force"
+                    Write-Warning "  Set-AzContext -SubscriptionId <your-target-subscription>"
+                    Write-Warning "Skipping ARM resource enumeration due to access restrictions."
+                    $Script:PerformARMChecks = $false
+                    return
+                } else {
+                    Write-Warning "Failed to test subscription access: $($_.Exception.Message)"
+                    Write-Warning "Continuing with limited enumeration..."
+                }
+            }
+            
             # Enumerate resources using Azure Resource Graph API (advanced query)
             Write-Output "`nRetrieving resources via Azure Resource Graph API..."
             $batchRequestBody = @{
@@ -9821,15 +10279,47 @@ if ($Script:AuthenticationStatus.AzureCLI) {
             if ($ownedObjects -and -not $ownedObjects.Error) {
                 $output.OwnedObjects = $ownedObjects
                 Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
+                
+                # Show details for owned applications (highest priority for privilege escalation)
                 if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
                     Write-Host "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
                     Write-Host "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
+                    foreach ($app in $ownedObjects.Applications) {
+                        Write-Output "        Application: $($app.displayName) (ID: $($app.id), AppId: $($app.appId))"
+                    }
                 }
+                
+                # Show details for owned service principals
                 if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
                     Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
+                    foreach ($sp in $ownedObjects.ServicePrincipals) {
+                        Write-Output "        Service Principal: $($sp.displayName) (ID: $($sp.id), AppId: $($sp.appId))"
+                    }
                 }
+                
+                # Show details for owned groups
                 if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
                     Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
+                    foreach ($group in $ownedObjects.Groups) {
+                        Write-Output "        Group: $($group.displayName) (ID: $($group.id), Type: $($group.groupTypes -join ', '))"
+                    }
+                }
+                
+                # Show details for owned devices
+                if ($ownedObjects.Analysis.OwnedDevices -gt 0) {
+                    Write-Output "    Owned Devices: $($ownedObjects.Analysis.OwnedDevices)"
+                    foreach ($device in $ownedObjects.Devices) {
+                        Write-Output "        Device: $($device.displayName) (ID: $($device.id), OS: $($device.operatingSystem))"
+                    }
+                }
+                
+                # Show details for other owned objects
+                if ($ownedObjects.Analysis.OtherOwnedObjects -gt 0) {
+                    Write-Output "    Other Owned Objects: $($ownedObjects.Analysis.OtherOwnedObjects)"
+                    foreach ($other in $ownedObjects.Others) {
+                        $objectType = $other.'@odata.type' -replace '#microsoft\.graph\.', ''
+                        Write-Output "        ${objectType}: $($other.displayName) (ID: $($other.id))"
+                    }
                 }
             }
         }
