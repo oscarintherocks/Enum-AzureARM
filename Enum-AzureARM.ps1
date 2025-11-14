@@ -2633,7 +2633,7 @@ function Get-KeyVaultSecrets {
                                         $secretName = $secretInfo.Name
                                         try {
                                             foreach ($apiVer in @("7.4", "7.3", "7.2")) {
-                                                $secretValueUri = "$($VaultUri.TrimEnd('/'))/secrets/$secretName" + "?api-version=$apiVer"
+                                                $secretValueUri = "$($VaultUri.TrimEnd('/'))/secrets/${secretName}?api-version=$apiVer"
 
                                                 try {
                                                     $secretValue = Invoke-RestMethod -Uri $secretValueUri -Headers $headers -Method GET -ErrorAction Stop
@@ -4539,7 +4539,7 @@ function Get-CosmosDbAccountDetails {
 
         # Get account properties
         try {
-            $accountUri = "https://management.azure.com$CosmosDbAccountId" + "?api-version=2023-04-15"
+            $accountUri = "https://management.azure.com${CosmosDbAccountId}?api-version=2023-04-15"
             $accountResponse = Invoke-RestMethod -Uri $accountUri -Headers $headers -Method GET
             $accountDetails.Properties = $accountResponse
             Write-Verbose "  Retrieved account properties"
@@ -4939,7 +4939,7 @@ function Get-AppConfigurationDetails {
         }
 
         # Get App Configuration store details
-        $appConfigInfo = Invoke-ARMRequest -Uri "https://management.azure.com$AppConfigId" + "?api-version=2023-03-01"
+        $appConfigInfo = Invoke-ARMRequest -Uri "https://management.azure.com${AppConfigId}?api-version=2023-03-01"
         if ($appConfigInfo) {
             $appConfigDetails.Endpoint = $appConfigInfo.properties.endpoint
             $appConfigDetails.CreationDate = $appConfigInfo.properties.creationDate
@@ -5392,7 +5392,7 @@ function Get-NetworkSecurityGroupDetails {
         Write-Debug "Getting detailed NSG information for: $NsgName"
 
         # Get NSG details
-        $nsgInfo = Invoke-ARMRequest -Uri "https://management.azure.com$NsgId" + "?api-version=2022-07-01"
+        $nsgInfo = Invoke-ARMRequest -Uri "https://management.azure.com${NsgId}?api-version=2022-07-01"
 
         if (-not $nsgInfo) {
             return @{
@@ -5510,11 +5510,11 @@ function Get-NetworkSecurityGroupDetails {
         # Try to get flow logs information
         try {
             $flowLogsUri = "https://management.azure.com/subscriptions/$((($nsgInfo.id -split '/')[2]))/providers/Microsoft.Network/networkWatchers"
-            $networkWatchers = Invoke-ARMRequest -Uri "$flowLogsUri" + "?api-version=2022-07-01" -SuppressWarnings $true
+            $networkWatchers = Invoke-ARMRequest -Uri "${flowLogsUri}?api-version=2022-07-01" -SuppressWarnings $true
 
             if ($networkWatchers -and $networkWatchers.value) {
                 foreach ($watcher in $networkWatchers.value) {
-                    $flowLogsUri = "https://management.azure.com$($watcher.id)/flowLogs" + "?api-version=2022-07-01"
+                    $flowLogsUri = "https://management.azure.com$($watcher.id)/flowLogs?api-version=2022-07-01"
                     $flowLogs = Invoke-ARMRequest -Uri $flowLogsUri -SuppressWarnings $true
 
                     if ($flowLogs -and $flowLogs.value) {
@@ -5565,9 +5565,10 @@ function Get-VirtualMachineDetails {
 
     try {
         Write-Debug "Getting detailed VM information for: $VmName"
+        Write-Debug "Original VM ID parameter: $VmId"
 
         # Get VM details
-        $vmInfo = Invoke-ARMRequest -Uri "https://management.azure.com$VmId" + "?api-version=2022-08-01"
+        $vmInfo = Invoke-ARMRequest -Uri "https://management.azure.com${VmId}?api-version=2022-08-01"
 
         if (-not $vmInfo) {
             return @{
@@ -5575,6 +5576,9 @@ function Get-VirtualMachineDetails {
                 Error = "Failed to retrieve VM details"
             }
         }
+
+        Write-Debug "VM Info ID from response: $($vmInfo.id)"
+        Write-Debug "Comparing IDs - Original: $VmId | Response: $($vmInfo.id)"
 
         $vmDetails = @{
             Name = $vmInfo.name
@@ -5633,7 +5637,7 @@ function Get-VirtualMachineDetails {
         if ($vmInfo.properties.networkProfile.networkInterfaces) {
             foreach ($nic in $vmInfo.properties.networkProfile.networkInterfaces) {
                 try {
-                    $nicInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($nic.id)" + "?api-version=2022-07-01" -SuppressWarnings $true
+                    $nicInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($nic.id)?api-version=2022-07-01" -SuppressWarnings $true
                     if ($nicInfo) {
                         $nicDetail = @{
                             Name = $nicInfo.name
@@ -5658,7 +5662,7 @@ function Get-VirtualMachineDetails {
                         # Get Public IP if attached
                         if ($nicInfo.properties.ipConfigurations[0].properties.publicIPAddress) {
                             try {
-                                $pipInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($nicInfo.properties.ipConfigurations[0].properties.publicIPAddress.id)" + "?api-version=2022-05-01" -SuppressWarnings $true
+                                $pipInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($nicInfo.properties.ipConfigurations[0].properties.publicIPAddress.id)?api-version=2022-05-01" -SuppressWarnings $true
                                 if ($pipInfo) {
                                     $nicDetail.PublicIPAddress = $pipInfo.properties.ipAddress
                                     $nicDetail.PublicIPAllocationMethod = $pipInfo.properties.publicIPAllocationMethod
@@ -5672,13 +5676,16 @@ function Get-VirtualMachineDetails {
                     }
                 } catch {
                     Write-Debug "Could not retrieve NIC details for VM $VmName : $($_.Exception.Message)"
+                    Write-Verbose "NIC enumeration failed for $($nic.id) - access denied or resource not found"
                 }
             }
         }
 
-        # Get VM Extensions
+        # Get VM Extensions (use the canonical ID from Azure response)
         try {
-            $extensionsInfo = Invoke-ARMRequest -Uri "https://management.azure.com$VmId/extensions" + "?api-version=2022-08-01" -SuppressWarnings $true
+            $canonicalVmId = $vmInfo.id
+            Write-Debug "Using canonical VM ID for extensions: $canonicalVmId"
+            $extensionsInfo = Invoke-ARMRequest -Uri "https://management.azure.com${canonicalVmId}/extensions?api-version=2022-08-01" -SuppressWarnings $true
             if ($extensionsInfo -and $extensionsInfo.value) {
                 $vmDetails.Extensions = $extensionsInfo.value | ForEach-Object {
                     @{
@@ -5695,11 +5702,13 @@ function Get-VirtualMachineDetails {
             }
         } catch {
             Write-Debug "Could not retrieve extensions for VM $VmName : $($_.Exception.Message)"
+            Write-Verbose "VM extensions enumeration failed - access denied or resource not found"
         }
 
-        # Get VM Power State
+        # Get VM Power State (use the canonical ID from Azure response)
         try {
-            $instanceView = Invoke-ARMRequest -Uri "https://management.azure.com$VmId/instanceView" + "?api-version=2022-08-01" -SuppressWarnings $true
+            Write-Debug "Using canonical VM ID for instance view: $canonicalVmId"
+            $instanceView = Invoke-ARMRequest -Uri "https://management.azure.com${canonicalVmId}/instanceView?api-version=2022-08-01" -SuppressWarnings $true
             if ($instanceView) {
                 $powerState = $instanceView.statuses | Where-Object { $_.code -like "PowerState/*" }
                 if ($powerState) {
@@ -5733,6 +5742,7 @@ function Get-VirtualMachineDetails {
             }
         } catch {
             Write-Debug "Could not retrieve instance view for VM $VmName : $($_.Exception.Message)"
+            Write-Verbose "VM instance view enumeration failed - access denied or resource not found"
         }
 
         # Get Security Profile information
@@ -5748,6 +5758,12 @@ function Get-VirtualMachineDetails {
                 } else { @{} }
                 EncryptionAtHost = $secProfile.encryptionAtHost
             }
+        }
+
+        # Add permission note if enumeration was incomplete
+        if ($vmDetails.Extensions.Count -eq 0 -and $vmDetails.NetworkInterfaces.Count -eq 0) {
+            Write-Verbose "Note: VM basic details retrieved but extensions and NICs enumeration failed - may require additional permissions"
+            $vmDetails.PermissionNote = "Basic VM info only - extension and NIC enumeration failed (insufficient permissions or access denied)"
         }
 
         # Analyze VM security posture
@@ -7362,7 +7378,27 @@ function Get-MonitoringAndLoggingDetails {
         $keyResources = $Resources | Where-Object { $_.type -in $keyResourceTypes }
         foreach ($resource in $keyResources | Select-Object -First 10) { # Limit to first 10 to avoid too many API calls
             try {
-                $diagnosticInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($resource.id)/providers/microsoft.insights/diagnosticSettings?api-version=2021-05-01-preview" -SuppressWarnings $true
+                Write-Debug "Getting diagnostic settings for resource: $($resource.name) with ID: $($resource.id)"
+                
+                # Try to get canonical resource ID first to ensure correct casing
+                $canonicalResourceInfo = $null
+                try {
+                    $canonicalResourceInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($resource.id)?api-version=2021-04-01" -SuppressWarnings $true
+                } catch {
+                    Write-Debug "Could not get canonical resource info for $($resource.name): $($_.Exception.Message)"
+                }
+                
+                $resourceIdToUse = if ($canonicalResourceInfo -and $canonicalResourceInfo.id) { $canonicalResourceInfo.id } else { $resource.id }
+                Write-Debug "Using resource ID for diagnostic settings: $resourceIdToUse"
+                
+                $diagnosticInfo = Invoke-ARMRequest -Uri "https://management.azure.com$resourceIdToUse/providers/microsoft.insights/diagnosticSettings?api-version=2021-05-01-preview" -SuppressWarnings $true
+                
+                # Fallback to stable API version if preview fails
+                if (-not $diagnosticInfo) {
+                    Write-Debug "Trying stable API version for diagnostic settings on $($resource.name)"
+                    $diagnosticInfo = Invoke-ARMRequest -Uri "https://management.azure.com$resourceIdToUse/providers/microsoft.insights/diagnosticSettings?api-version=2017-05-01-preview" -SuppressWarnings $true
+                }
+                
                 if ($diagnosticInfo -and $diagnosticInfo.value) {
                     foreach ($diagSetting in $diagnosticInfo.value) {
                         $diagDetail = @{
@@ -7382,6 +7418,7 @@ function Get-MonitoringAndLoggingDetails {
                 }
             } catch {
                 Write-Debug "Could not retrieve diagnostic settings for $($resource.name): $($_.Exception.Message)"
+                Write-Verbose "Diagnostic settings enumeration failed for $($resource.name) - may require Monitoring Reader permissions or resource access"
             }
         }
 
@@ -7399,6 +7436,7 @@ function Get-MonitoringAndLoggingDetails {
             } | Measure-Object -Sum).Sum
             HasCentralizedLogging = $monitoringDetails.LogAnalyticsWorkspaces.Count -gt 0
             HasApplicationMonitoring = $monitoringDetails.ApplicationInsights.Count -gt 0
+            PermissionNote = if ($monitoringDetails.DiagnosticSettings.Count -eq 0) { "Diagnostic settings enumeration may require Monitoring Reader or Insights Reader permissions" } else { $null }
         }
 
         return $monitoringDetails
@@ -8737,6 +8775,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                         if (-not $continueWithCurrent) {
                             Write-Host "🔄 Let's select a different subscription..." -ForegroundColor Cyan
                             $context = $null  # Force subscription selection
+                            $subscriptionSelected = $false  # Reset the flag to ensure selection runs
                         } else {
                             Write-Host "✓ Continuing with current subscription: $subscriptionName" -ForegroundColor Green
                             $subscriptionSelected = $true
@@ -8798,6 +8837,9 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Warning "Failed to set Azure PowerShell context: $($_.Exception.Message)"
                     Write-Warning "Continuing with REST API enumeration using selected subscription ID: $subscriptionId"
                 }
+                
+                # Mark subscription as successfully selected
+                $subscriptionSelected = $true
             } else {
                 # No subscription selected - Graph-only mode
                 Write-Output "Continuing with Graph-only enumeration (no Azure subscription access)"
@@ -8815,7 +8857,31 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
 
                 $subscriptionId = "None"
                 $subscriptionName = "Graph-Only Mode"
+                
+                # Mark as "selected" for Graph-only mode (special case)
+                $subscriptionSelected = $true
             }
+        }
+
+        # Validate that we have proper subscription details before proceeding  
+        if ($subscriptionSelected -and (-not $subscriptionId -or $subscriptionId -eq "")) {
+            Write-Warning "Subscription was selected but subscription ID is empty. Attempting to recover from current context..."
+            $currentContext = Get-AzContext -ErrorAction SilentlyContinue
+            if ($currentContext -and $currentContext.Subscription -and $currentContext.Subscription.Id) {
+                $tenantId = $currentContext.Tenant.Id
+                $subscriptionId = $currentContext.Subscription.Id
+                $subscriptionName = $currentContext.Subscription.Name
+                Write-Output "Recovered subscription details from context: $subscriptionName ($subscriptionId)"
+            } else {
+                Write-Warning "Could not recover subscription details. Forcing subscription selection..."
+                $subscriptionSelected = $false
+                $context = $null
+            }
+        }
+
+        # Final validation - ensure we have valid subscription details
+        if ($subscriptionSelected -and (-not $subscriptionId -or $subscriptionId -eq "" -or $subscriptionId -eq "None")) {
+            Write-Verbose "Subscription validation: Selected but ID is invalid ($subscriptionId) - this is normal for Graph-only mode"
         }
 
         # Set output properties
@@ -8828,8 +8894,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
             # First, test subscription access before attempting full enumeration
             Write-Output "`nTesting subscription access..."
             Write-Verbose "Testing access to subscription: $subscriptionId"
-            $testUri = "https://management.azure.com/subscriptions/$subscriptionId" + "?api-version=2022-12-01"
+            Write-Debug "DEBUG: subscriptionId variable value: '$subscriptionId'"
+            Write-Debug "DEBUG: subscriptionId length: $($subscriptionId.Length)"
+            $testUri = "https://management.azure.com/subscriptions/${subscriptionId}?api-version=2022-12-01"
             Write-Verbose "Test URI: $testUri"
+            Write-Debug "DEBUG: Complete test URI: $testUri"
             try {
                 $accessTest = Invoke-ARMRequest -Uri $testUri
                 if ($accessTest -and $accessTest.subscriptionId) {
@@ -9211,7 +9280,8 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                 $vmInfo = Get-VirtualMachineDetails -VmId $r.id -VmName $r.name
                                 if ($vmInfo -and -not $vmInfo.Error) {
                                     $vmDetails += $vmInfo
-                                    Write-Output "  Found VM: $($r.name) ($($vmInfo.OsType)) with $($vmInfo.Extensions.Count) extensions and $($vmInfo.NetworkInterfaces.Count) NICs"
+                                    $permissionNote = if ($vmInfo.PermissionNote) { " (limited due to permissions)" } else { "" }
+                                    Write-Output "  Found VM: $($r.name) ($($vmInfo.OsType)) with $($vmInfo.Extensions.Count) extensions and $($vmInfo.NetworkInterfaces.Count) NICs$permissionNote"
                                 }
                             }
                             "Microsoft.Network/publicIPAddresses" {
@@ -9762,11 +9832,15 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                         Write-Output "  Application Insights: $($monitoringDetails.ApplicationInsights.Count)"
                         Write-Output "  Action Groups: $($monitoringDetails.ActionGroups.Count) (total receivers: $($monitoringDetails.MonitoringAnalysis.TotalActionGroupReceivers))"
                         Write-Output "  Alert Rules: $($monitoringDetails.AlertRules.Count) ($($monitoringDetails.MonitoringAnalysis.EnabledAlertRules) enabled)"
-                        Write-Output "  Diagnostic Settings: $($monitoringDetails.DiagnosticSettings.Count) covering $($monitoringDetails.MonitoringAnalysis.ResourcesWithDiagnostics) resources"
+                        $permissionNote = if ($monitoringDetails.MonitoringAnalysis.PermissionNote) { " (limited by permissions)" } else { "" }
+                        Write-Output "  Diagnostic Settings: $($monitoringDetails.DiagnosticSettings.Count) covering $($monitoringDetails.MonitoringAnalysis.ResourcesWithDiagnostics) resources$permissionNote"
                         if ($monitoringDetails.MonitoringAnalysis.HasCentralizedLogging) {
                             Write-Host "  Centralized Logging: Configured" -ForegroundColor Green
                         } else {
                             Write-Host "  Centralized Logging: Not detected" -ForegroundColor Yellow
+                        }
+                        if ($monitoringDetails.MonitoringAnalysis.PermissionNote) {
+                            Write-Host "  Note: $($monitoringDetails.MonitoringAnalysis.PermissionNote)" -ForegroundColor Yellow
                         }
                     } else {
                         Write-Warning "Could not retrieve monitoring details: $($monitoringDetails.Error)"
