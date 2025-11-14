@@ -1,37 +1,40 @@
+# Suppress PSScriptAnalyzer rules that are necessary for Azure authentication
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '', Justification = 'Required for Azure authentication with tokens and service principals')]
+
 <#
 .SYNOPSIS
     Azure ARM/Graph enumeration with selective token support and multiple authentication methods
 .DESCRIPTION
-    Comprehensive Azure enumeration tool that supports multiple authentication methods including current user context, 
-    access tokens, and service principal credentials. When OutputFile is not specified, generates dynamic filename: 
+    Comprehensive Azure enumeration tool that supports multiple authentication methods including current user context,
+    access tokens, and service principal credentials. When OutputFile is not specified, generates dynamic filename:
     accountid_YYYYMMDDHHMMSS_AzureResources.json
-    
+
     Supports multiple authentication methods:
     1. Current user context (-UseCurrentUser)
        - Uses existing Azure PowerShell or Azure CLI authentication
        - Requires prior login with Connect-AzAccount or az login
-    
+
     2. Access tokens (-AccessTokenARM and/or -AccessTokenGraph with -AccountId)
        - Direct token-based authentication for ARM and/or Graph APIs
        - Useful for CTF scenarios or when tokens are obtained through other means
-    
+
     3. Azure CLI service principal authentication (recommended for automation)
        - Method A: -UseAzureCLI with -ServicePrincipalId, -ServicePrincipalSecret, -TenantId
        - Method B: Direct parameters: -ServicePrincipalId, -ServicePrincipalSecret, -TenantId
        - Uses Azure CLI backend for authentication and token management
-    
+
     4. Azure PowerShell service principal authentication (enhanced capabilities)
        - Parameters: -UseServicePrincipal with -ApplicationId, -ClientSecret, -TenantId
        - Automatically extracts ARM, Graph, Storage, and Key Vault tokens for comprehensive access
        - Provides enhanced blob download capabilities with multiple authentication methods
        - Ideal for comprehensive enumeration when service principal credentials are available
-    
+
     Service Principal Authentication Benefits:
     - Automatic resource-specific token acquisition (Storage: https://storage.azure.com/, Key Vault: https://vault.azure.net/)
     - Enhanced blob download with 5-tier authentication system
     - Cross-resource enumeration capabilities
     - No interactive authentication required (perfect for automation/CTF scenarios)
-    
+
 .PARAMETER UseServicePrincipal
     Enables Azure PowerShell service principal authentication mode with enhanced token capabilities
 .PARAMETER ApplicationId
@@ -170,7 +173,7 @@ if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessT
     Write-Host "  -AllowNoSubscription       (Allow Graph-only enumeration when no subscription access)"
     Write-Host "  -Verbose                   (Show detailed operation progress)"
     Write-Host "  -Help                      (Show this message)`n"
-    
+
     Write-Host "Usage Examples:" -ForegroundColor Green
     Write-Host ""
     Write-Host "  Basic enumeration with current user:" -ForegroundColor White
@@ -194,7 +197,7 @@ if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessT
     Write-Host "  Custom output and format:" -ForegroundColor White
     Write-Host "  .\Enum-AzureARM.ps1 -UseCurrentUser -OutputFormat csv -OutputFile 'MyReport.csv'" -ForegroundColor Green
     Write-Host "`n"
-    
+
     if (-not $Help -and -not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessTokenGraph -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId) -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId)) {
         Write-Host "Error: No authentication method provided." -ForegroundColor Red
     }
@@ -207,9 +210,9 @@ if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessT
 function Test-AuthenticationParameters {
     [CmdletBinding()]
     param()
-    
+
     Write-Verbose "Validating authentication parameters..."
-    
+
     # Determine authentication mode based on provided parameters
     $authMode = "Unknown"
     if ($UseCurrentUser) {
@@ -221,14 +224,14 @@ function Test-AuthenticationParameters {
     } elseif ($AccessTokenGraph) {
         $authMode = "TokenGraph"
     }
-    
+
     Write-Verbose "Authentication mode: $authMode"
-    
+
     # Check if using current user, token-based authentication, or service principal authentication
     if (-not $UseCurrentUser -and [string]::IsNullOrWhiteSpace($AccessTokenARM) -and [string]::IsNullOrWhiteSpace($AccessTokenGraph) -and -not $UseAzureCLI -and -not ($ServicePrincipalId -and $ServicePrincipalSecret -and $TenantId) -and -not ($UseServicePrincipal -and $ApplicationId -and $ClientSecret -and $TenantId)) {
         throw "No authentication method provided. Use -UseCurrentUser, provide access tokens (-AccessTokenARM and/or -AccessTokenGraph), or use service principal authentication.`n`nExamples:`n  .\Enum-AzureARM.ps1 -UseCurrentUser`n  .\Enum-AzureARM.ps1 -AccessTokenARM `"your-arm-token`" -AccountId `"user@example.com`"`n  .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId `"app-id`" -ClientSecret `"secret`" -TenantId `"tenant-id`""
     }
-    
+
     # Validate Azure PowerShell Service Principal parameters
     if ($UseServicePrincipal) {
         if ([string]::IsNullOrWhiteSpace($ApplicationId)) {
@@ -241,32 +244,32 @@ function Test-AuthenticationParameters {
             throw "TenantId parameter is required when using -UseServicePrincipal. Please provide a valid tenant ID."
         }
     }
-    
+
     # Validate required parameters for different scenarios
     if (-not [string]::IsNullOrWhiteSpace($AccessTokenARM)) {
         if ([string]::IsNullOrWhiteSpace($AccountId)) {
             throw "AccountId parameter is required when using AccessTokenARM. Please provide a valid Account ID (UPN or Object ID).`n`nExample:`n  .\Enum-AzureARM.ps1 -AccessTokenARM `"your-token`" -AccountId `"user@example.com`""
         }
     }
-    
+
     # Validate tokens are not just whitespace if provided
     if ($PSBoundParameters.ContainsKey('AccessTokenARM') -and [string]::IsNullOrWhiteSpace($AccessTokenARM)) {
         throw "AccessTokenARM parameter cannot be empty or whitespace. Please provide a valid ARM access token or remove the parameter."
     }
-    
+
     if ($PSBoundParameters.ContainsKey('AccessTokenGraph') -and [string]::IsNullOrWhiteSpace($AccessTokenGraph)) {
         throw "AccessTokenGraph parameter cannot be empty or whitespace. Please provide a valid Graph access token or remove the parameter."
     }
-    
+
     # Validate OutputFile is not null or empty
     if ([string]::IsNullOrWhiteSpace($OutputFile)) {
         throw "OutputFile parameter cannot be null or empty."
     }
-    
+
     # Determine what checks will be performed
     $Script:PerformARMChecks = $false
     $Script:PerformGraphChecks = $false
-    
+
     if ($UseCurrentUser) {
         # CurrentUser mode attempts both ARM and Graph
         $Script:PerformARMChecks = $true
@@ -294,7 +297,7 @@ function Test-AuthenticationParameters {
             Write-Verbose "Graph token provided: Graph user checks will be performed"
         }
     }
-    
+
     # Validate output file extension matches format
     if ($OutputFile -notmatch "\.(?:json|csv)$") {
         Write-Warning "Output file extension does not match format. Adjusting..."
@@ -304,7 +307,7 @@ function Test-AuthenticationParameters {
             $Script:OutputFile = [System.IO.Path]::ChangeExtension($OutputFile, "csv")
         }
     }
-    
+
     Write-Verbose "Authentication parameters validated successfully."
     Write-Verbose "Will perform ARM checks: $Script:PerformARMChecks"
     Write-Verbose "Will perform Graph checks: $Script:PerformGraphChecks"
@@ -331,25 +334,25 @@ function Enable-SSLBypass {
     param(
         [string]$Reason = "SSL certificate error detected"
     )
-    
+
     if (-not $Script:SSLBypassEnabled) {
         Write-Warning "SSL Certificate Bypass Activated"
         Write-Warning "Reason: $Reason"
         Write-Warning "This is common in CTF/lab environments with self-signed certificates"
         Write-Warning "All SSL certificate verification will be disabled for this session"
-        
+
         # Disable .NET certificate validation
         [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-        
+
         # Disable Azure CLI certificate verification
         $env:AZURE_CLI_DISABLE_CONNECTION_VERIFICATION = "1"
-        
+
         # Set PowerShell session preference for Invoke-RestMethod/Invoke-WebRequest
         if ($PSVersionTable.PSVersion.Major -ge 6) {
             $PSDefaultParameterValues['Invoke-RestMethod:SkipCertificateCheck'] = $true
             $PSDefaultParameterValues['Invoke-WebRequest:SkipCertificateCheck'] = $true
         }
-        
+
         $Script:SSLBypassEnabled = $true
         Write-Host "SSL certificate verification disabled globally" -ForegroundColor Yellow
     }
@@ -362,23 +365,23 @@ function Disable-SSLBypass {
     #>
     if ($Script:SSLBypassEnabled) {
         Write-Verbose "Restoring SSL certificate verification settings"
-        
+
         # Restore .NET certificate validation
         [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $Script:OriginalCertificateCallback
-        
+
         # Restore Azure CLI certificate verification
         if ($Script:OriginalAzureCLIVerification) {
             $env:AZURE_CLI_DISABLE_CONNECTION_VERIFICATION = $Script:OriginalAzureCLIVerification
         } else {
             Remove-Item Env:AZURE_CLI_DISABLE_CONNECTION_VERIFICATION -ErrorAction SilentlyContinue
         }
-        
+
         # Remove PowerShell session preferences
         if ($PSVersionTable.PSVersion.Major -ge 6) {
             $PSDefaultParameterValues.Remove('Invoke-RestMethod:SkipCertificateCheck')
             $PSDefaultParameterValues.Remove('Invoke-WebRequest:SkipCertificateCheck')
         }
-        
+
         $Script:SSLBypassEnabled = $false
         Write-Verbose "SSL certificate verification restored"
     }
@@ -392,21 +395,21 @@ function Test-SSLConnectivity {
     param(
         [string]$TestUri = "https://management.azure.com/"
     )
-    
+
     if ($Script:SSLBypassEnabled) {
         return # Already bypassed
     }
-    
+
     try {
         Write-Debug "Testing SSL connectivity to: $TestUri"
         $null = Invoke-RestMethod -Uri $TestUri -Method HEAD -TimeoutSec 10 -ErrorAction Stop
         Write-Debug "SSL connectivity test successful"
     } catch {
-        if ($_.Exception.Message -like "*SSL*" -or 
-            $_.Exception.Message -like "*certificate*" -or 
+        if ($_.Exception.Message -like "*SSL*" -or
+            $_.Exception.Message -like "*certificate*" -or
             $_.Exception.Message -like "*CERTIFICATE_VERIFY_FAILED*" -or
             $_.Exception.Message -like "*self-signed*") {
-            
+
             Enable-SSLBypass -Reason "SSL connectivity test failed: $($_.Exception.Message)"
         } else {
             Write-Debug "SSL connectivity test failed for non-certificate reason: $($_.Exception.Message)"
@@ -428,7 +431,7 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 if ($OutputFile -eq "Results\AzureResourcesOutput.json") {
     $timestamp = Get-Date -Format "yyyyMMddHHmmss"
     $accountIdentifier = "unknown"
-    
+
     # Try to get account identifier from different sources
     if ($AccountId) {
         $accountIdentifier = $AccountId -replace '[\\/:*?"<>|]', '_'  # Sanitize filename
@@ -446,7 +449,7 @@ if ($OutputFile -eq "Results\AzureResourcesOutput.json") {
             Write-Verbose "Could not determine account identifier: $($_.Exception.Message)"
         }
     }
-    
+
     $filename = "${accountIdentifier}_${timestamp}_AzureResources.json"
     $OutputFile = Join-Path "Results" $filename
     Write-Verbose "Generated dynamic filename: $OutputFile"
@@ -479,32 +482,32 @@ function Request-UserConfirmation {
     param(
         [Parameter(Mandatory=$true)]
         [string]$Message,
-        
+
         [Parameter(Mandatory=$false)]
         [int]$TimeoutSeconds = $Script:UserPromptTimeout,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$DefaultYes
     )
-    
+
     $defaultChoice = if ($DefaultYes) { "Yes" } else { "No" }
     $choices = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
-    
+
     Write-Host ""
     Write-Host $Message -ForegroundColor Yellow
     Write-Host "Default: $defaultChoice (timeout: ${TimeoutSeconds}s) $choices" -ForegroundColor Gray
     Write-Host -NoNewline "Your choice: " -ForegroundColor Cyan
-    
+
     # Start a job to handle the timeout
     $job = Start-Job -ScriptBlock {
         param($timeout)
         Start-Sleep -Seconds $timeout
         return "TIMEOUT"
     } -ArgumentList $TimeoutSeconds
-    
+
     $response = $null
     $startTime = Get-Date
-    
+
     while ((Get-Date) - $startTime -lt [TimeSpan]::FromSeconds($TimeoutSeconds)) {
         if ([Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true)
@@ -519,16 +522,16 @@ function Request-UserConfirmation {
         }
         Start-Sleep -Milliseconds 100
     }
-    
+
     Stop-Job $job -ErrorAction SilentlyContinue
     Remove-Job $job -ErrorAction SilentlyContinue
-    
+
     if ($null -eq $response) {
         Write-Host ""
         Write-Host "Timeout reached. Using default: $defaultChoice" -ForegroundColor Yellow
         $response = ""
     }
-    
+
     # Determine the result
     if ([string]::IsNullOrEmpty($response)) {
         return $DefaultYes.IsPresent
@@ -549,34 +552,34 @@ function Invoke-AuthenticationFix {
         [Parameter(Mandatory=$true)]
         [ValidateSet("ARM", "Graph", "Both")]
         [string]$FixType,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$Interactive
     )
-    
+
     $result = @{
         Success = $false
         ARMFixed = $false
         GraphFixed = $false
         Message = ""
     }
-    
+
     try {
         Write-Host ""
         Write-Host "🔧 AUTHENTICATION HELPER" -ForegroundColor Cyan
         Write-Host "=========================" -ForegroundColor Cyan
-        
+
         if ($FixType -eq "ARM" -or $FixType -eq "Both") {
             Write-Host "Issue: ARM access token could not be retrieved from current context" -ForegroundColor Yellow
             Write-Host "This usually means you're not authenticated to Azure PowerShell or Azure CLI" -ForegroundColor Gray
             Write-Host ""
-            
+
             if ($Interactive.IsPresent) {
                 $tryFix = Request-UserConfirmation -Message "Would you like me to attempt automatic authentication to Azure?"
-                
+
                 if ($tryFix) {
                     Write-Host "🔄 Attempting to fix Azure authentication..." -ForegroundColor Green
-                    
+
                     # Try Connect-AzAccount first
                     try {
                         Write-Host "Trying Azure PowerShell authentication (Connect-AzAccount)..." -ForegroundColor Cyan
@@ -588,11 +591,11 @@ function Invoke-AuthenticationFix {
                         }
                     } catch {
                         Write-Host "❌ Azure PowerShell authentication failed: $($_.Exception.Message)" -ForegroundColor Red
-                        
+
                         # Try Azure CLI as fallback
                         try {
                             Write-Host "Trying Azure CLI authentication (az login)..." -ForegroundColor Cyan
-                            $azLogin = az login --output json 2>&1
+                            $null = az login --output json 2>&1
                             if ($LASTEXITCODE -eq 0) {
                                 Write-Host "✅ Azure CLI authentication successful!" -ForegroundColor Green
                                 $result.ARMFixed = $true
@@ -607,18 +610,18 @@ function Invoke-AuthenticationFix {
                 }
             }
         }
-        
+
         if ($FixType -eq "Graph" -or $FixType -eq "Both") {
             Write-Host "Issue: Microsoft Graph access is not available" -ForegroundColor Yellow
             Write-Host "This usually means you're not connected to Microsoft Graph" -ForegroundColor Gray
             Write-Host ""
-            
+
             if ($Interactive.IsPresent) {
                 $tryGraphFix = Request-UserConfirmation -Message "Would you like me to attempt Microsoft Graph authentication?"
-                
+
                 if ($tryGraphFix) {
                     Write-Host "🔄 Attempting to fix Microsoft Graph authentication..." -ForegroundColor Green
-                    
+
                     try {
                         Write-Host "Connecting to Microsoft Graph with basic permissions..." -ForegroundColor Cyan
                         Connect-MgGraph -Scopes "User.Read", "Directory.Read.All" -NoWelcome -ErrorAction Stop
@@ -633,7 +636,7 @@ function Invoke-AuthenticationFix {
                 }
             }
         }
-        
+
         if ($result.Success) {
             Write-Host ""
             Write-Host "🎉 Authentication fix completed! Please run the script again." -ForegroundColor Green
@@ -648,12 +651,12 @@ function Invoke-AuthenticationFix {
             Write-Host "  4. Use token-based authentication with -AccessTokenARM and -AccessTokenGraph parameters" -ForegroundColor White
             $result.Message = "Automatic fix not applied. Manual authentication required."
         }
-        
+
     } catch {
         $result.Message = "Error during authentication fix: $($_.Exception.Message)"
         Write-Host "❌ Error during authentication fix: $($_.Exception.Message)" -ForegroundColor Red
     }
-    
+
     return $result
 }
 
@@ -668,14 +671,14 @@ function Select-AzureSubscription {
     param(
         [Parameter(Mandatory=$true)]
         [string]$AccessToken,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$AllowNoSubscription,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$NonInteractive
     )
-    
+
     $result = @{
         SubscriptionId = $null
         SubscriptionName = $null
@@ -683,82 +686,68 @@ function Select-AzureSubscription {
         Success = $false
         UserCancelled = $false
     }
-    
+
     try {
         Write-Host "🔍 Discovering available Azure subscriptions..." -ForegroundColor Cyan
-        
+
         # Get available subscriptions
         $subscriptions = Invoke-RestMethod -Uri "https://management.azure.com/subscriptions?api-version=2022-12-01" -Headers @{
             'Authorization' = "Bearer $AccessToken"
             'Content-Type' = 'application/json'
         } -Method GET
-        
+
         if (-not $subscriptions -or -not $subscriptions.value -or $subscriptions.value.Count -eq 0) {
-            if ($AllowNoSubscription) {
-                Write-Host "⚠️ No accessible subscriptions found, but continuing with Graph-only enumeration..." -ForegroundColor Yellow
-                $result.Success = $true
-                return $result
-            } else {
-                Write-Host "❌ No accessible Azure subscriptions found." -ForegroundColor Red
-                Write-Host "Use -AllowNoSubscription to continue with Graph-only enumeration." -ForegroundColor Gray
-                return $result
-            }
-        }
-        
-        $subList = $subscriptions.value | Sort-Object displayName
-        
-        if ($subList.Count -eq 1) {
-            # Only one subscription available - use it automatically
-            $selectedSub = $subList[0]
-            Write-Host "✅ Found single accessible subscription: " -NoNewline -ForegroundColor Green
-            Write-Host "$($selectedSub.displayName) ($($selectedSub.subscriptionId))" -ForegroundColor White
-            
-            $result.SubscriptionId = $selectedSub.subscriptionId
-            $result.SubscriptionName = $selectedSub.displayName
-            $result.TenantId = $selectedSub.tenantId
+            # Automatically use Graph-only mode when no subscriptions are accessible
+            Write-Host "⚠️ No accessible Azure subscriptions found." -ForegroundColor Yellow
+            Write-Host "🎯 Automatically continuing with Graph-only enumeration..." -ForegroundColor Cyan
             $result.Success = $true
             return $result
         }
-        
+
+        $subList = $subscriptions.value | Sort-Object displayName
+
         if ($NonInteractive) {
             # Non-interactive mode - use first subscription
             $selectedSub = $subList[0]
             Write-Host "⚠️ Non-interactive mode: Using first available subscription: " -NoNewline -ForegroundColor Yellow
             Write-Host "$($selectedSub.displayName) ($($selectedSub.subscriptionId))" -ForegroundColor White
-            
+
             $result.SubscriptionId = $selectedSub.subscriptionId
             $result.SubscriptionName = $selectedSub.displayName
             $result.TenantId = $selectedSub.tenantId
             $result.Success = $true
             return $result
         }
-        
+
+        # Always show subscription selection menu when multiple subscriptions are found
+        # (Even with single subscription, show menu to give user choice to continue without subscription)
+
         # Multiple subscriptions - show selection menu
         Write-Host ""
         Write-Host "📋 Multiple Azure subscriptions found:" -ForegroundColor Cyan
         Write-Host "=" * 50 -ForegroundColor Gray
-        
+
         for ($i = 0; $i -lt $subList.Count; $i++) {
             $sub = $subList[$i]
             Write-Host "$($i + 1). " -NoNewline -ForegroundColor Yellow
             Write-Host "$($sub.displayName)" -NoNewline -ForegroundColor White
             Write-Host " ($($sub.subscriptionId))" -ForegroundColor Gray
         }
-        
+
         if ($AllowNoSubscription) {
             Write-Host "$($subList.Count + 1). " -NoNewline -ForegroundColor Yellow
             Write-Host "Continue without subscription (Graph-only)" -ForegroundColor Cyan
         }
-        
+
         Write-Host "0. " -NoNewline -ForegroundColor Red
         Write-Host "Exit" -ForegroundColor Red
         Write-Host ""
-        
+
         # Get user selection
         do {
             $maxChoice = if ($AllowNoSubscription) { $subList.Count + 1 } else { $subList.Count }
             Write-Host "Select subscription (1-$maxChoice, or 0 to exit): " -NoNewline -ForegroundColor Cyan
-            
+
             $selection = $null
             if ([Console]::IsInputRedirected) {
                 # Fallback for non-interactive environments
@@ -767,26 +756,26 @@ function Select-AzureSubscription {
             } else {
                 $selection = Read-Host
             }
-            
+
             if ($selection -eq "0") {
                 Write-Host "❌ Operation cancelled by user." -ForegroundColor Red
                 $result.UserCancelled = $true
                 return $result
             }
-            
+
             if ($AllowNoSubscription -and $selection -eq ($subList.Count + 1).ToString()) {
                 Write-Host "✅ Continuing with Graph-only enumeration..." -ForegroundColor Green
                 $result.Success = $true
                 return $result
             }
-            
+
             $selectionNum = 0
             if ([int]::TryParse($selection, [ref]$selectionNum) -and $selectionNum -ge 1 -and $selectionNum -le $subList.Count) {
                 $selectedSub = $subList[$selectionNum - 1]
-                
+
                 Write-Host "✅ Selected: " -NoNewline -ForegroundColor Green
                 Write-Host "$($selectedSub.displayName) ($($selectedSub.subscriptionId))" -ForegroundColor White
-                
+
                 $result.SubscriptionId = $selectedSub.subscriptionId
                 $result.SubscriptionName = $selectedSub.displayName
                 $result.TenantId = $selectedSub.tenantId
@@ -796,7 +785,7 @@ function Select-AzureSubscription {
                 Write-Host "❌ Invalid selection. Please enter a number between 1 and $maxChoice (or 0 to exit)." -ForegroundColor Red
             }
         } while ($true)
-        
+
     } catch {
         Write-Host "❌ Error discovering subscriptions: $($_.Exception.Message)" -ForegroundColor Red
         if ($AllowNoSubscription) {
@@ -816,42 +805,42 @@ function Invoke-ARMRequest {
     param(
         [Parameter(Mandatory=$true)]
         [string]$Uri,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Method = "GET",
-        
+
         [Parameter(Mandatory=$false)]
         $Body = $null,
-        
+
         [Parameter(Mandatory=$false)]
         [int]$RetryCount = 3,
-        
+
         [Parameter(Mandatory=$false)]
         [int]$RetryDelaySeconds = 2,
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$SuppressWarnings
     )
-    
+
     if (-not $AccessTokenARM) {
         Write-Warning "No ARM access token available for request to: $Uri"
         return $null
     }
-    
-    $headers = @{ 
+
+    $headers = @{
         "Authorization" = "Bearer $AccessTokenARM"
         "Content-Type" = "application/json"
         "User-Agent" = "AzureEnumerationScript/2.0"
     }
-    
+
     $bodyJson = if ($Body) { $Body | ConvertTo-Json -Depth 10 } else { $null }
-    
+
     for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
         try {
             Write-Debug "ARM REST call (attempt $attempt): $Uri"
-            
+
             $response = Invoke-RestMethod -Uri $Uri -Headers $headers -Method $Method -Body $bodyJson -ErrorAction Stop
-            
+
             if ($response -and $response.value) {
                 Write-Debug "ARM response received; items count: $($response.value.Count)"
             } elseif ($response) {
@@ -859,21 +848,21 @@ function Invoke-ARMRequest {
             } else {
                 Write-Debug "ARM response received; empty or null"
             }
-            
+
             return $response
-            
+
         } catch [System.Net.WebException] {
             $statusCode = $_.Exception.Response.StatusCode
-            
+
             # Check for SSL certificate errors and enable global bypass
-            if ($_.Exception.Message -like "*SSL*" -or 
-                $_.Exception.Message -like "*certificate*" -or 
+            if ($_.Exception.Message -like "*SSL*" -or
+                $_.Exception.Message -like "*certificate*" -or
                 $_.Exception.Message -like "*CERTIFICATE_VERIFY_FAILED*" -or
                 $_.Exception.Message -like "*self-signed*") {
-                
+
                 if (-not $Script:SSLBypassEnabled) {
                     Enable-SSLBypass -Reason "ARM API SSL error: $($_.Exception.Message)"
-                    
+
                     # Retry this request immediately with SSL bypass enabled
                     Write-Debug "Retrying ARM request with SSL bypass: $Uri"
                     try {
@@ -885,11 +874,11 @@ function Invoke-ARMRequest {
                     }
                 }
             }
-            
+
             if (-not $SuppressWarnings) {
                 Write-Warning "ARM call failed (attempt $attempt/$RetryCount) - Status: $statusCode, URI: $Uri"
             }
-            
+
             if ($statusCode -eq 'Unauthorized' -or $statusCode -eq 'Forbidden') {
                 # Provide enhanced error guidance for auth failures
                 if ($statusCode -eq 'Unauthorized' -and $Script:ARMTokenTenant -and $Script:SubscriptionTenant -and $Script:ARMTokenTenant -ne $Script:SubscriptionTenant) {
@@ -901,24 +890,24 @@ function Invoke-ARMRequest {
                 }
                 return $null
             }
-            
+
             if ($attempt -eq $RetryCount) {
                 Write-Error "ARM call permanently failed after $RetryCount attempts: $Uri - Error: $($_.Exception.Message)"
                 return $null
             }
-            
+
             Start-Sleep -Seconds ($RetryDelaySeconds * $attempt)
-            
+
         } catch {
             # Check for SSL certificate errors in general exceptions too
-            if ($_.Exception.Message -like "*SSL*" -or 
-                $_.Exception.Message -like "*certificate*" -or 
+            if ($_.Exception.Message -like "*SSL*" -or
+                $_.Exception.Message -like "*certificate*" -or
                 $_.Exception.Message -like "*CERTIFICATE_VERIFY_FAILED*" -or
                 $_.Exception.Message -like "*self-signed*") {
-                
+
                 if (-not $Script:SSLBypassEnabled) {
                     Enable-SSLBypass -Reason "ARM API SSL error: $($_.Exception.Message)"
-                    
+
                     # Retry this request immediately with SSL bypass enabled
                     Write-Debug "Retrying ARM request with SSL bypass: $Uri"
                     try {
@@ -933,16 +922,16 @@ function Invoke-ARMRequest {
             if (-not $SuppressWarnings) {
                 Write-Warning "ARM call failed (attempt $attempt/$RetryCount) on $Uri with error: $($_.Exception.Message)"
             }
-            
+
             if ($attempt -eq $RetryCount) {
                 Write-Warning "ARM call permanently failed after $RetryCount attempts: $Uri"
                 return $null
             }
-            
+
             Start-Sleep -Seconds $RetryDelaySeconds
         }
     }
-    
+
     return $null
 }
 
@@ -955,39 +944,39 @@ function Invoke-GraphRequest {
     param(
         [Parameter(Mandatory=$true)]
         [string]$Uri,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$Method = "GET",
-        
+
         [Parameter(Mandatory=$false)]
         $Body = $null,
-        
+
         [Parameter(Mandatory=$false)]
         [int]$RetryCount = 3,
-        
+
         [Parameter(Mandatory=$false)]
         [int]$RetryDelaySeconds = 2
     )
-    
+
     if (-not $AccessTokenGraph) {
         Write-Warning "No Graph access token available for request to: $Uri"
         return $null
     }
-    
-    $headers = @{ 
+
+    $headers = @{
         "Authorization" = "Bearer $AccessTokenGraph"
         "Content-Type" = "application/json"
         "User-Agent" = "AzureEnumerationScript/2.0"
     }
-    
+
     $bodyJson = if ($Body) { $Body | ConvertTo-Json -Depth 10 } else { $null }
-    
+
     for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
         try {
             Write-Debug "Graph REST call (attempt $attempt): $Uri"
-            
+
             $response = Invoke-RestMethod -Uri $Uri -Headers $headers -Method $Method -Body $bodyJson -ErrorAction Stop
-            
+
             if ($response -and $response.value) {
                 Write-Debug "Graph response received; items count: $($response.value.Count)"
             } elseif ($response) {
@@ -995,21 +984,21 @@ function Invoke-GraphRequest {
             } else {
                 Write-Debug "Graph response received; empty or null"
             }
-            
+
             return $response
-            
+
         } catch [System.Net.WebException] {
             $statusCode = $_.Exception.Response.StatusCode
-            
+
             # Check for SSL certificate errors and enable global bypass
-            if ($_.Exception.Message -like "*SSL*" -or 
-                $_.Exception.Message -like "*certificate*" -or 
+            if ($_.Exception.Message -like "*SSL*" -or
+                $_.Exception.Message -like "*certificate*" -or
                 $_.Exception.Message -like "*CERTIFICATE_VERIFY_FAILED*" -or
                 $_.Exception.Message -like "*self-signed*") {
-                
+
                 if (-not $Script:SSLBypassEnabled) {
                     Enable-SSLBypass -Reason "Graph API SSL error: $($_.Exception.Message)"
-                    
+
                     # Retry this request immediately with SSL bypass enabled
                     Write-Debug "Retrying Graph request with SSL bypass: $Uri"
                     try {
@@ -1021,31 +1010,31 @@ function Invoke-GraphRequest {
                     }
                 }
             }
-            
+
             Write-Warning "Graph call failed (attempt $attempt/$RetryCount) - Status: $statusCode, URI: $Uri"
-            
+
             if ($statusCode -eq 'Unauthorized' -or $statusCode -eq 'Forbidden') {
                 Write-Error "Authentication/Authorization failed for: $Uri"
                 return $null
             }
-            
+
             if ($attempt -eq $RetryCount) {
                 Write-Error "Graph call permanently failed after $RetryCount attempts: $Uri - Error: $($_.Exception.Message)"
                 return $null
             }
-            
+
             Start-Sleep -Seconds ($RetryDelaySeconds * $attempt)
-            
+
         } catch {
             # Check for SSL certificate errors in general exceptions too
-            if ($_.Exception.Message -like "*SSL*" -or 
-                $_.Exception.Message -like "*certificate*" -or 
+            if ($_.Exception.Message -like "*SSL*" -or
+                $_.Exception.Message -like "*certificate*" -or
                 $_.Exception.Message -like "*CERTIFICATE_VERIFY_FAILED*" -or
                 $_.Exception.Message -like "*self-signed*") {
-                
+
                 if (-not $Script:SSLBypassEnabled) {
                     Enable-SSLBypass -Reason "Graph API SSL error: $($_.Exception.Message)"
-                    
+
                     # Retry this request immediately with SSL bypass enabled
                     Write-Debug "Retrying Graph request with SSL bypass: $Uri"
                     try {
@@ -1057,18 +1046,18 @@ function Invoke-GraphRequest {
                     }
                 }
             }
-            
+
             Write-Warning "Graph call failed (attempt $attempt/$RetryCount) on $Uri with error: $($_.Exception.Message)"
-            
+
             if ($attempt -eq $RetryCount) {
                 Write-Error "Graph call permanently failed after $RetryCount attempts: $Uri"
                 return $null
             }
-            
+
             Start-Sleep -Seconds $RetryDelaySeconds
         }
     }
-    
+
     return $null
 }
 
@@ -1080,17 +1069,17 @@ function Get-AzAccessTokenFromContext {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         $context = Get-AzContext -ErrorAction Stop
         if (-not $context) {
             Write-Warning "No Azure context found. Please run Connect-AzAccount first."
             return $null
         }
-        
+
         Write-Verbose "Retrieving access token for ARM endpoint..."
         $tokenResult = Get-AzAccessToken -ResourceUrl "https://management.azure.com/" -ErrorAction Stop
-        
+
         if ($tokenResult -and $tokenResult.Token) {
             # Handle both SecureString and plain string tokens
             if ($tokenResult.Token -is [System.Security.SecureString]) {
@@ -1102,10 +1091,10 @@ function Get-AzAccessTokenFromContext {
                 return $tokenResult.Token
             }
         }
-        
+
         Write-Warning "Could not retrieve access token from context."
         return $null
-        
+
     } catch {
         Write-Warning "Failed to get access token from Az context: $($_.Exception.Message)"
         return $null
@@ -1122,11 +1111,11 @@ function Get-ResourceSpecificTokens {
         [Parameter(Mandatory = $false)]
         [ValidateSet("Storage", "KeyVault", "Both")]
         [string]$TokenType = "Both",
-        
+
         [Parameter(Mandatory = $false)]
         [switch]$ShowGuidance
     )
-    
+
     $result = @{
         StorageToken = $null
         KeyVaultToken = $null
@@ -1134,7 +1123,7 @@ function Get-ResourceSpecificTokens {
         Error = $null
         Guidance = @()
     }
-    
+
     try {
         # Check if Azure CLI is available and authenticated
         $azCli = Get-Command az -ErrorAction SilentlyContinue
@@ -1142,14 +1131,14 @@ function Get-ResourceSpecificTokens {
             $result.Error = "Azure CLI (az) is not installed or not available in PATH"
             return $result
         }
-        
+
         # Check if we're logged in
-        $accountCheck = az account show --output json 2>&1
+        $null = az account show --output json 2>&1
         if ($LASTEXITCODE -ne 0) {
             $result.Error = "Not authenticated with Azure CLI. Please run 'az login' first."
             return $result
         }
-        
+
         # Get Storage token
         if ($TokenType -eq "Storage" -or $TokenType -eq "Both") {
             try {
@@ -1177,7 +1166,7 @@ function Get-ResourceSpecificTokens {
                 }
             }
         }
-        
+
         # Get Key Vault token
         if ($TokenType -eq "KeyVault" -or $TokenType -eq "Both") {
             try {
@@ -1205,16 +1194,16 @@ function Get-ResourceSpecificTokens {
                 }
             }
         }
-        
+
         $result.Success = ($result.StorageToken -or $result.KeyVaultToken)
-        
+
         # Show guidance if requested or if tokens failed
         if ($ShowGuidance -or $result.Guidance.Count -gt 0) {
             Show-ResourceTokenGuidance -TokenResults $result
         }
-        
+
         return $result
-        
+
     } catch {
         $result.Error = "Failed to get resource-specific tokens: $($_.Exception.Message)"
         return $result
@@ -1231,29 +1220,29 @@ function Show-ResourceTokenGuidance {
         [Parameter(Mandatory = $true)]
         [hashtable]$TokenResults
     )
-    
+
     if ($TokenResults.Guidance.Count -eq 0) {
         return
     }
-    
+
     Write-Host "`n" -NoNewline
     Write-Host "RESOURCE TOKEN GUIDANCE" -ForegroundColor Yellow
     Write-Host "========================" -ForegroundColor Yellow
     Write-Host "Some operations require resource-specific tokens instead of ARM management tokens.`n" -ForegroundColor Gray
-    
+
     foreach ($guidance in $TokenResults.Guidance) {
         Write-Host "Resource: $($guidance.Resource)" -ForegroundColor Cyan
         Write-Host "Manual Token Command:" -ForegroundColor White
         Write-Host "  $($guidance.ManualCommand)" -ForegroundColor Green
-        
+
         if ($guidance.Usage) {
             Write-Host "Usage: $($guidance.Usage)" -ForegroundColor Gray
         }
-        
+
         if ($guidance.Error) {
             Write-Host "Error: $($guidance.Error)" -ForegroundColor Red
         }
-        
+
         # Show specific usage examples
         if ($guidance.Resource -eq "Storage") {
             Write-Host "`nStorage Token Usage Examples:" -ForegroundColor Yellow
@@ -1263,7 +1252,7 @@ function Show-ResourceTokenGuidance {
             Write-Host "  `$headers = @{ 'Authorization' = \"Bearer `$storageToken\"; 'x-ms-version' = '2020-10-02' }" -ForegroundColor White
             Write-Host "  Invoke-WebRequest -Uri \"https://storageaccount.blob.core.windows.net/container/blob\" -Headers `$headers" -ForegroundColor White
         }
-        
+
         if ($guidance.Resource -eq "KeyVault") {
             Write-Host "`nKey Vault Token Usage Examples:" -ForegroundColor Yellow
             Write-Host "  # Get token" -ForegroundColor Gray
@@ -1272,10 +1261,10 @@ function Show-ResourceTokenGuidance {
             Write-Host "  `$headers = @{ 'Authorization' = \"Bearer `$kvToken\" }" -ForegroundColor White
             Write-Host "  Invoke-RestMethod -Uri \"https://keyvault.vault.azure.net/secrets/secretname?api-version=7.3\" -Headers `$headers" -ForegroundColor White
         }
-        
+
         Write-Host ""
     }
-    
+
     Write-Host "Alternative: PowerShell Module Methods" -ForegroundColor Yellow
     Write-Host "  # For Storage (requires Az.Storage module)" -ForegroundColor Gray
     Write-Host "  Connect-AzAccount" -ForegroundColor White
@@ -1299,14 +1288,14 @@ function Get-AccessTokenFromAzureCLI {
         [ValidateSet("ARM", "Graph", "Both")]
         [string]$TokenType = "Both"
     )
-    
+
     $result = @{
         ARMToken = $null
         GraphToken = $null
         Success = $false
         Error = $null
     }
-    
+
     try {
         # Check if Azure CLI is available and authenticated
         $azCli = Get-Command az -ErrorAction SilentlyContinue
@@ -1314,7 +1303,7 @@ function Get-AccessTokenFromAzureCLI {
             $result.Error = "Azure CLI (az) is not installed or not available in PATH"
             return $result
         }
-        
+
         # Check if we're logged in
         $accountCheck = az account show --output json 2>&1
         if ($LASTEXITCODE -ne 0) {
@@ -1322,7 +1311,7 @@ function Get-AccessTokenFromAzureCLI {
             Write-Verbose $accountCheck
             return $result
         }
-        
+
         if ($TokenType -eq "ARM" -or $TokenType -eq "Both") {
             try {
                 Write-Verbose "Acquiring ARM access token from Azure CLI..."
@@ -1338,7 +1327,7 @@ function Get-AccessTokenFromAzureCLI {
                 Write-Warning "Error getting ARM token: $($_.Exception.Message)"
             }
         }
-        
+
         if ($TokenType -eq "Graph" -or $TokenType -eq "Both") {
             try {
                 Write-Verbose "Acquiring Graph access token from Azure CLI..."
@@ -1354,10 +1343,10 @@ function Get-AccessTokenFromAzureCLI {
                 Write-Warning "Error getting Graph token: $($_.Exception.Message)"
             }
         }
-        
+
         $result.Success = ($result.ARMToken -or $result.GraphToken)
         return $result
-        
+
     } catch {
         $result.Error = "Failed to get access tokens from Azure CLI: $($_.Exception.Message)"
         return $result
@@ -1371,30 +1360,30 @@ function Test-TenantMismatch {
     #>
     [CmdletBinding()]
     param()
-    
+
     # Only run if we have ARM token tenant info
     if (-not $Script:ARMTokenTenant) {
         return
     }
-    
+
     Write-Verbose "Checking for tenant mismatches..."
-    
+
     try {
         # Try to get subscription information to determine the subscription's tenant
         if ($AccessTokenARM) {
             Write-Verbose "Discovering accessible subscriptions to check tenant alignment..."
-            
+
             $subscriptionsUri = "https://management.azure.com/subscriptions?api-version=2022-12-01"
             $subscriptions = Invoke-ARMRequest -Uri $subscriptionsUri -SuppressWarnings
-            
+
             if ($subscriptions -and $subscriptions.value -and $subscriptions.value.Count -gt 0) {
                 $foundMismatch = $false
-                
+
                 foreach ($sub in $subscriptions.value) {
                     if ($sub.tenantId -and $sub.tenantId -ne $Script:ARMTokenTenant) {
                         $foundMismatch = $true
                         $Script:SubscriptionTenant = $sub.tenantId
-                        
+
                         Write-Host "`n" -NoNewline
                         Write-Host "TENANT MISMATCH DETECTED" -ForegroundColor Red -BackgroundColor Yellow
                         Write-Host "=========================" -ForegroundColor Red
@@ -1402,13 +1391,13 @@ function Test-TenantMismatch {
                         Write-Host "Subscription Tenant: $($sub.tenantId)" -ForegroundColor Yellow
                         Write-Host "Subscription:        $($sub.displayName) ($($sub.subscriptionId))" -ForegroundColor Gray
                         Write-Host ""
-                        
+
                         Write-Host "ISSUE EXPLANATION:" -ForegroundColor Cyan
                         Write-Host "Your ARM token was issued for tenant '$Script:ARMTokenTenant'" -ForegroundColor White
                         Write-Host "But you're trying to access subscription '$($sub.displayName)' in tenant '$($sub.tenantId)'" -ForegroundColor White
                         Write-Host "This will result in '401 Unauthorized' errors for ARM API calls." -ForegroundColor Red
                         Write-Host ""
-                        
+
                         Write-Host "SOLUTIONS:" -ForegroundColor Green
                         Write-Host ""
                         Write-Host "Option 1: Get ARM token for correct tenant" -ForegroundColor Cyan
@@ -1420,14 +1409,14 @@ function Test-TenantMismatch {
                         Write-Host "  Connect-AzAccount -Tenant '$($sub.tenantId)'" -ForegroundColor White
                         Write-Host "  `$armToken = (Get-AzAccessToken -ResourceUrl 'https://management.azure.com/').Token" -ForegroundColor White
                         Write-Host ""
-                        
+
                         Write-Host "Option 2: Use Service Principal (if you have SP credentials)" -ForegroundColor Cyan
                         Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal \" -ForegroundColor White
                         Write-Host "                       -ApplicationId '<app-id>' \" -ForegroundColor White
                         Write-Host "                       -ClientSecret '<secret>' \" -ForegroundColor White
                         Write-Host "                       -TenantId '$($sub.tenantId)'" -ForegroundColor White
                         Write-Host ""
-                        
+
                         Write-Host "Option 3: Continue with Graph-only enumeration (if Graph token is valid)" -ForegroundColor Cyan
                         if ($Script:GraphTokenTenant -eq $Script:ARMTokenTenant) {
                             Write-Host "  Your Graph token is for the same tenant as ARM token, but may still work" -ForegroundColor Gray
@@ -1435,18 +1424,18 @@ function Test-TenantMismatch {
                         }
                         Write-Host "  .\Enum-AzureARM.ps1 -AccessTokenGraph '<graph-token>' -GraphOnly" -ForegroundColor White
                         Write-Host ""
-                        
+
                         Write-Host "COMMON SCENARIOS:" -ForegroundColor Yellow
                         Write-Host "• Guest user accessing resources in another tenant" -ForegroundColor Gray
                         Write-Host "• Multi-tenant application with wrong tenant-specific token" -ForegroundColor Gray
                         Write-Host "• Token obtained for home tenant but accessing resource tenant" -ForegroundColor Gray
                         Write-Host "• B2B collaboration scenario with cross-tenant access" -ForegroundColor Gray
                         Write-Host ""
-                        
+
                         break
                     }
                 }
-                
+
                 if (-not $foundMismatch) {
                     Write-Verbose "No tenant mismatches detected - tokens and subscriptions are aligned"
                 }
@@ -1454,7 +1443,7 @@ function Test-TenantMismatch {
                 Write-Verbose "Could not retrieve subscription information to check tenant alignment"
             }
         }
-        
+
     } catch {
         Write-Verbose "Could not perform tenant mismatch check: $($_.Exception.Message)"
         # Don't throw errors here as this is just a diagnostic check
@@ -1471,24 +1460,24 @@ function Get-RoleDefinitionName {
         [Parameter(Mandatory=$true)]
         [string]$RoleDefinitionId
     )
-    
+
     if ([string]::IsNullOrWhiteSpace($RoleDefinitionId)) {
         Write-Debug "Empty or null role definition ID provided"
         return $null
     }
-    
+
     # Ensure proper URI format
     $baseUri = "https://management.azure.com"
     if (-not $RoleDefinitionId.StartsWith("/")) {
         $RoleDefinitionId = "/$RoleDefinitionId"
     }
-    
+
     $fullUri = "$baseUri$($RoleDefinitionId)?api-version=2022-04-01"
-    
+
     try {
         Write-Debug "Retrieving role definition: $RoleDefinitionId"
         $roleDef = Invoke-ARMRequest -Uri $fullUri
-        
+
         if ($roleDef -and $roleDef.properties -and $roleDef.properties.roleName) {
             Write-Debug "Role definition found: $($roleDef.properties.roleName)"
             return $roleDef.properties.roleName
@@ -1509,16 +1498,16 @@ function Test-GraphAccess {
     .SYNOPSIS
         Tests available Graph access methods for debugging.
     #>
-    
+
     Write-Host "=== Graph Access Diagnostic ===" -ForegroundColor Cyan
     Write-Host "AccessTokenGraph provided: $($null -ne $AccessTokenGraph)" -ForegroundColor Yellow
     Write-Host "AuthenticationStatus.GraphContext: $($Script:AuthenticationStatus.GraphContext)" -ForegroundColor Yellow
     Write-Host "AuthenticationStatus.GraphToken: $($Script:AuthenticationStatus.GraphToken)" -ForegroundColor Yellow
-    
+
     # Test Graph module availability
     $mgModule = Get-Module -ListAvailable -Name Microsoft.Graph.Authentication
     Write-Host "Microsoft.Graph.Authentication module available: $($null -ne $mgModule)" -ForegroundColor Yellow
-    
+
     # Test Graph context
     try {
         $mgContext = Get-MgContext -ErrorAction SilentlyContinue
@@ -1529,11 +1518,11 @@ function Test-GraphAccess {
     } catch {
         Write-Host "Get-MgContext failed: $($_.Exception.Message)" -ForegroundColor Red
     }
-    
+
     # Test cmdlet availability
     $mgUserCmd = Get-Command Get-MgUser -ErrorAction SilentlyContinue
     Write-Host "Get-MgUser cmdlet available: $($null -ne $mgUserCmd)" -ForegroundColor Yellow
-    
+
     # Test Graph token with a simple REST API call
     if ($AccessTokenGraph) {
         Write-Host "Testing Graph token with REST API call..." -ForegroundColor Yellow
@@ -1546,14 +1535,14 @@ function Test-GraphAccess {
             }
         } catch {
             Write-Host "[FAILED] Graph REST API test failed: $($_.Exception.Message)" -ForegroundColor Red
-            
+
             # Check if it's a permission-related error
             if ($_.Exception.Message -match "Forbidden|Unauthorized|Insufficient|Permission" -or
                 ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response.StatusCode -in @(401, 403))) {
                 Show-GraphPermissionGuidance -MissingPermission "User.Read" -ErrorContext "Basic user profile access (/me endpoint)"
             }
         }
-        
+
         # Test Directory.Read.All permission by trying to read a user
         try {
             $testUser = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/users?`$top=1" -ErrorAction Stop
@@ -1564,7 +1553,7 @@ function Test-GraphAccess {
             }
         } catch {
             Write-Host "[FAILED] Directory.Read.All permission test failed: $($_.Exception.Message)" -ForegroundColor Red
-            
+
             # Check if it's a permission-related error
             if ($_.Exception.Message -match "Forbidden|Unauthorized|Insufficient|Permission" -or
                 ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response.StatusCode -in @(401, 403))) {
@@ -1574,7 +1563,7 @@ function Test-GraphAccess {
             }
         }
     }
-    
+
     Write-Host "================================" -ForegroundColor Cyan
 }
 
@@ -1583,19 +1572,19 @@ function Show-GraphPermissionGuidance {
         [string]$MissingPermission,
         [string]$ErrorContext = "Graph API call"
     )
-    
+
     Write-Host ""
     Write-Host "Graph Permission Issue Detected" -ForegroundColor Red
     Write-Host "================================" -ForegroundColor Red
     Write-Host "Context: $ErrorContext" -ForegroundColor Yellow
     Write-Host ""
-    
+
     if ($Script:GraphTokenPermissions) {
         Write-Host "Current Token Analysis:" -ForegroundColor Cyan
         Write-Host "  Delegated Scopes: $($Script:GraphTokenPermissions.Scopes -join ', ')" -ForegroundColor Gray
         Write-Host "  Application Roles: $($Script:GraphTokenPermissions.Roles -join ', ')" -ForegroundColor Gray
         Write-Host "  Issues Found: $($Script:GraphTokenPermissions.Issues.Count)" -ForegroundColor Gray
-        
+
         if ($Script:GraphTokenPermissions.Issues.Count -gt 0) {
             foreach ($issue in $Script:GraphTokenPermissions.Issues) {
                 Write-Host "    - $issue" -ForegroundColor Red
@@ -1603,28 +1592,28 @@ function Show-GraphPermissionGuidance {
         }
         Write-Host ""
     }
-    
+
     Write-Host "Recommended Solutions:" -ForegroundColor Green
     Write-Host ""
-    
+
     Write-Host "Option 1: Azure CLI (Interactive Login)" -ForegroundColor Cyan
     Write-Host "  # For basic enumeration (User.Read + Directory.Read.All):" -ForegroundColor Gray
     Write-Host "  az login --scope https://graph.microsoft.com/User.Read https://graph.microsoft.com/Directory.Read.All" -ForegroundColor White
     Write-Host "  az account get-access-token --resource=https://graph.microsoft.com" -ForegroundColor White
     Write-Host ""
-    
+
     Write-Host "Option 2: Azure PowerShell (Connect-AzAccount)" -ForegroundColor Cyan
     Write-Host "  # Basic enumeration permissions:" -ForegroundColor Gray
     Write-Host "  Connect-AzAccount -Scope 'https://graph.microsoft.com/User.Read', 'https://graph.microsoft.com/Directory.Read.All'" -ForegroundColor White
     Write-Host "  `$token = [Microsoft.Azure.Commands.Common.Authentication.AzureSession]::Instance.AuthenticationFactory.Authenticate(`$context.Account, `$context.Environment, `$context.Tenant.Id, `$null, 'https://graph.microsoft.com/').AccessToken" -ForegroundColor White
     Write-Host ""
-    
+
     Write-Host "Option 2b: Azure PowerShell Service Principal (Recommended for CTF)" -ForegroundColor Cyan
     Write-Host "  # Use discovered service principal credentials directly:" -ForegroundColor Gray
     Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId '<APP_ID>' -ClientSecret '<SECRET>' -TenantId '<TENANT_ID>'" -ForegroundColor White
     Write-Host "  # Automatically extracts ARM, Graph, and Key Vault tokens" -ForegroundColor Gray
     Write-Host ""
-    
+
     Write-Host "Option 3: Azure CLI (Service Principal with App Permissions)" -ForegroundColor Cyan
     Write-Host "  # First, register app and grant admin consent for:" -ForegroundColor Gray
     Write-Host "  # - Directory.Read.All (Application permission)" -ForegroundColor Gray
@@ -1632,12 +1621,12 @@ function Show-GraphPermissionGuidance {
     Write-Host "  az login --service-principal -u <APP_ID> -p <SECRET> --tenant <TENANT_ID>" -ForegroundColor White
     Write-Host "  az account get-access-token --resource=https://graph.microsoft.com" -ForegroundColor White
     Write-Host ""
-    
+
     Write-Host "Option 4: Manual Token Request (PowerShell)" -ForegroundColor Cyan
     Write-Host "  # For client credentials flow (app-only) - REQUIRES APPLICATION PERMISSIONS:" -ForegroundColor Gray
     Write-Host @'
   $clientId = "YOUR_APP_ID"
-  $clientSecret = "YOUR_SECRET"  
+  $clientSecret = "YOUR_SECRET"
   $tenantId = "YOUR_TENANT_ID"
   $body = @{
       grant_type = "client_credentials"
@@ -1649,7 +1638,7 @@ function Show-GraphPermissionGuidance {
   $token = $response.access_token
 '@ -ForegroundColor White
     Write-Host ""
-    
+
     if ($MissingPermission -like "*client credentials*" -or $ErrorContext -like "*delegated-only*") {
         Write-Host "CRITICAL: Your App Registration Issue" -ForegroundColor Red
         Write-Host "Your application has DELEGATED permissions but you're using CLIENT CREDENTIALS flow." -ForegroundColor Yellow
@@ -1669,7 +1658,7 @@ function Show-GraphPermissionGuidance {
         Write-Host "Alternative: Use a different app with existing application permissions" -ForegroundColor Yellow
         Write-Host ""
     }
-    
+
     Write-Host "Required Permissions by Operation:" -ForegroundColor Yellow
     Write-Host "  Basic User Info: User.Read or User.ReadBasic.All" -ForegroundColor Gray
     Write-Host "  All Users: User.Read.All or Directory.Read.All" -ForegroundColor Gray
@@ -1677,7 +1666,7 @@ function Show-GraphPermissionGuidance {
     Write-Host "  Applications: Application.Read.All or Directory.Read.All" -ForegroundColor Gray
     Write-Host "  Directory Roles: RoleManagement.Read.Directory or Directory.Read.All" -ForegroundColor Gray
     Write-Host ""
-    
+
     Write-Host "Pro Tip: Use 'Directory.Read.All' for comprehensive read access to most resources" -ForegroundColor Green
     Write-Host ""
 }
@@ -1692,25 +1681,25 @@ function Get-PrincipalName {
         [Parameter(Mandatory=$true)]
         [string]$PrincipalId
     )
-    
+
     # Return null if no access token and no Graph context
     if (-not $AccessTokenGraph -and -not $Script:AuthenticationStatus.GraphContext) {
         Write-Debug "No Graph access token or Graph context available for principal lookup"
         return "No Graph Access"
     }
-    
+
     if ([string]::IsNullOrWhiteSpace($PrincipalId)) {
         Write-Debug "Empty or null principal ID provided"
         return "Empty Principal ID"
     }
-    
+
     try {
         Write-Debug "Looking up principal: $PrincipalId"
-        
+
         # Method 1: Try using PowerShell Graph cmdlets if context is available
         if ($Script:AuthenticationStatus.GraphContext) {
             Write-Debug "Attempting principal lookup using PowerShell Graph cmdlets"
-            
+
             # Try user first with Get-MgUser
             try {
                 if (Get-Command Get-MgUser -ErrorAction SilentlyContinue) {
@@ -1723,7 +1712,7 @@ function Get-PrincipalName {
             } catch {
                 Write-Debug "Get-MgUser failed for $PrincipalId : $($_.Exception.Message)"
             }
-            
+
             # Try group with Get-MgGroup
             try {
                 if (Get-Command Get-MgGroup -ErrorAction SilentlyContinue) {
@@ -1736,7 +1725,7 @@ function Get-PrincipalName {
             } catch {
                 Write-Debug "Get-MgGroup failed for $PrincipalId : $($_.Exception.Message)"
             }
-            
+
             # Try service principal with Get-MgServicePrincipal
             try {
                 if (Get-Command Get-MgServicePrincipal -ErrorAction SilentlyContinue) {
@@ -1750,11 +1739,11 @@ function Get-PrincipalName {
                 Write-Debug "Get-MgServicePrincipal failed for $PrincipalId : $($_.Exception.Message)"
             }
         }
-        
+
         # Method 2: Try REST API calls if we have an access token
         if ($AccessTokenGraph) {
             Write-Debug "Attempting principal lookup using Graph REST API"
-            
+
             # Try user first
             try {
                 $user = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/users/$PrincipalId" -ErrorAction SilentlyContinue
@@ -1765,7 +1754,7 @@ function Get-PrincipalName {
             } catch {
                 Write-Debug "REST API user lookup failed for $PrincipalId : $($_.Exception.Message)"
             }
-            
+
             # Try group
             try {
                 $group = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/groups/$PrincipalId" -ErrorAction SilentlyContinue
@@ -1776,7 +1765,7 @@ function Get-PrincipalName {
             } catch {
                 Write-Debug "REST API group lookup failed for $PrincipalId : $($_.Exception.Message)"
             }
-            
+
             # Try service principal
             try {
                 $servicePrincipal = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$PrincipalId" -ErrorAction SilentlyContinue
@@ -1788,10 +1777,10 @@ function Get-PrincipalName {
                 Write-Debug "REST API service principal lookup failed for $PrincipalId : $($_.Exception.Message)"
             }
         }
-        
+
         Write-Debug "Principal not found through any method: $PrincipalId"
         return "Principal Not Found"
-        
+
     } catch {
         Write-Debug "Principal lookup failed for $PrincipalId : $($_.Exception.Message)"
         return "Lookup Failed: $($_.Exception.Message)"
@@ -1808,7 +1797,7 @@ function Show-EnumerationHeader {
         [string]$TenantId,
         [string]$AuthMethod
     )
-    
+
     $separator = "=" * 80
     Write-Host ""
     Write-Host $separator -ForegroundColor Cyan
@@ -1828,44 +1817,44 @@ function Show-RoleAssignmentsSummary {
         [array]$RoleAssignments,
         [string]$Title = "ROLE ASSIGNMENTS SUMMARY"
     )
-    
+
     if (-not $RoleAssignments -or $RoleAssignments.Count -eq 0) {
         Write-Host "`n[$Title] No role assignments found or insufficient permissions" -ForegroundColor Yellow
         return
     }
-    
+
     $separator = "-" * 80
     Write-Host ""
     Write-Host $separator -ForegroundColor Green
     Write-Host " $Title ($($RoleAssignments.Count) assignments)" -ForegroundColor Green
     Write-Host $separator -ForegroundColor Green
-    
+
     # Group by role for better readability
     $groupedRoles = $RoleAssignments | Group-Object RoleDefinitionName | Sort-Object Count -Descending
-    
+
     foreach ($roleGroup in $groupedRoles) {
         Write-Host "`n* $($roleGroup.Name) ($($roleGroup.Count) assignments)" -ForegroundColor Cyan
-        
+
         $roleTable = @()
         foreach ($assignment in $roleGroup.Group) {
             $roleTable += [PSCustomObject]@{
-                'Principal Name' = if ($assignment.PrincipalName -and $assignment.PrincipalName -ne "Principal Not Found") { 
-                    $assignment.PrincipalName 
-                } else { 
-                    "Unknown ($($assignment.PrincipalType))" 
+                'Principal Name' = if ($assignment.PrincipalName -and $assignment.PrincipalName -ne "Principal Not Found") {
+                    $assignment.PrincipalName
+                } else {
+                    "Unknown ($($assignment.PrincipalType))"
                 }
                 'Principal ID' = $assignment.PrincipalId
                 'Type' = $assignment.PrincipalType
-                'Scope' = if ($assignment.Scope -match "/subscriptions/[^/]+/resourceGroups/([^/]+)") { 
-                    "RG: $($matches[1])" 
-                } elseif ($assignment.Scope -match "/subscriptions/([^/]+)$") { 
-                    "Subscription" 
-                } else { 
-                    "Resource" 
+                'Scope' = if ($assignment.Scope -match "/subscriptions/[^/]+/resourceGroups/([^/]+)") {
+                    "RG: $($matches[1])"
+                } elseif ($assignment.Scope -match "/subscriptions/([^/]+)$") {
+                    "Subscription"
+                } else {
+                    "Resource"
                 }
             }
         }
-        
+
         $roleTable | Format-Table -AutoSize | Out-String -Width 120 | Write-Host
     }
 }
@@ -1875,17 +1864,17 @@ function Show-ResourcesSummary {
     param(
         [hashtable]$Resources
     )
-    
+
     $separator = "-" * 80
     Write-Host ""
     Write-Host $separator -ForegroundColor Magenta
     Write-Host " AZURE RESOURCES DISCOVERED" -ForegroundColor Magenta
     Write-Host $separator -ForegroundColor Magenta
-    
+
     # Debug: Show what Key Vault data we received
     Write-Verbose "[DEBUG] Show-ResourcesSummary called"
     Write-Verbose "[DEBUG] Key Vaults count: $(if ($Resources.KeyVaults) { $Resources.KeyVaults.Count } else { 'null' })"
-    
+
     # Virtual Machines
     if ($Resources.VirtualMachines -and $Resources.VirtualMachines.Count -gt 0) {
         $vmStats = $Resources.VirtualMachines | Group-Object Location | ForEach-Object {
@@ -1896,7 +1885,7 @@ function Show-ResourcesSummary {
                 Status = ($_.Group | Where-Object {$_.PowerState -eq "VM running"}).Count
             }
         }
-        
+
         Write-Host "`n* Virtual Machines ($($Resources.VirtualMachines.Count) total)" -ForegroundColor Yellow
         if ($vmStats) {
             $vmStats | Format-Table -AutoSize @{
@@ -1910,7 +1899,7 @@ function Show-ResourcesSummary {
             } | Out-String | Write-Host
         }
     }
-    
+
     # Storage Accounts
     if ($Resources.StorageAccounts -and $Resources.StorageAccounts.Count -gt 0) {
         Write-Host "`n* Storage Accounts ($($Resources.StorageAccounts.Count) total)" -ForegroundColor Yellow
@@ -1925,17 +1914,17 @@ function Show-ResourcesSummary {
             }
         }
         $storageTable | Format-Table -AutoSize | Out-String | Write-Host
-        
+
         if ($Resources.StorageAccounts.Count -gt 10) {
             Write-Host "   ... and $($Resources.StorageAccounts.Count - 10) more (see JSON output for complete list)" -ForegroundColor Gray
         }
     }
-    
+
     # Key Vaults
     Write-Verbose "[DEBUG] Checking Key Vaults section..."
     Write-Verbose "[DEBUG] Resources.KeyVaults exists: $($null -ne $Resources.KeyVaults)"
     Write-Verbose "[DEBUG] Resources.KeyVaults.Count: $(if ($Resources.KeyVaults) { $Resources.KeyVaults.Count } else { 'N/A' })"
-    
+
     if ($Resources.KeyVaults -and $Resources.KeyVaults.Count -gt 0) {
         Write-Host "`n* Key Vaults ($($Resources.KeyVaults.Count) total)" -ForegroundColor Yellow
         $kvTable = $Resources.KeyVaults | ForEach-Object {
@@ -1951,33 +1940,33 @@ function Show-ResourcesSummary {
             }
         }
         $kvTable | Format-Table -AutoSize | Out-String | Write-Host
-        
+
         # Show secrets summary if any found
         Write-Verbose "   [DEBUG] Key Vaults count: $($Resources.KeyVaults.Count)"
         Write-Verbose "   [DEBUG] Key Vaults list: $($Resources.KeyVaults | ForEach-Object { $_.Name })"
-        
-        $totalSecrets = ($Resources.KeyVaults | ForEach-Object { 
+
+        $totalSecrets = ($Resources.KeyVaults | ForEach-Object {
             if ($_.SecretsInfo -and $_.SecretsInfo.Secrets) { $_.SecretsInfo.Secrets.Count } else { 0 }
         } | Measure-Object -Sum).Sum
-        
+
         Write-Verbose "   [DEBUG] Total secrets calculated: $totalSecrets"
-        
+
         if ($totalSecrets -gt 0) {
             Write-Host "`n   *** KEY VAULT SECRETS DISCOVERED ***" -ForegroundColor Green
             Write-Host "   * Total Secrets Found: $totalSecrets" -ForegroundColor Cyan
-            
+
             $allSecrets = @()
-            
+
             foreach ($kv in $Resources.KeyVaults) {
                 $kvName = $kv.Name
                 Write-Verbose "   [DEBUG] Processing Key Vault: $kvName"
-                
+
                 if ($kv.SecretsInfo -and $kv.SecretsInfo.Secrets) {
                     Write-Verbose "   [DEBUG] SecretsInfo exists, processing $($kv.SecretsInfo.Secrets.Count) secrets"
-                    
+
                     foreach ($secret in $kv.SecretsInfo.Secrets) {
                         Write-Verbose "   [DEBUG] Processing secret: $($secret.Name)"
-                        
+
                         $secretObject = [PSCustomObject]@{
                             'Vault' = $kvName
                             'Secret Name' = $secret.Name
@@ -1986,13 +1975,13 @@ function Show-ResourcesSummary {
                             'Enabled' = $secret.Enabled
                             'Source' = $secret.Source
                             'Value Retrieved' = if ($secret.ValueRetrieved) { "Yes" } else { "No" }
-                            'Value Preview' = if ($secret.ValueRetrieved -and $secret.Value) { 
-                                $secret.Value 
-                            } else { 
-                                "[Not Retrieved]" 
+                            'Value Preview' = if ($secret.ValueRetrieved -and $secret.Value) {
+                                $secret.Value
+                            } else {
+                                "[Not Retrieved]"
                             }
                         }
-                        
+
                         $allSecrets += $secretObject
                         Write-Verbose "   [DEBUG] Added secret object to array. Current count: $($allSecrets.Count)"
                     }
@@ -2000,12 +1989,12 @@ function Show-ResourcesSummary {
                     Write-Verbose "   [DEBUG] No SecretsInfo or Secrets for $kvName"
                 }
             }
-            
+
             if ($allSecrets -and $allSecrets.Count -gt 0) {
                 $secretSeparator = "=" * 78
                 Write-Host "`n   SECRETS DETAILS:" -ForegroundColor Yellow
                 Write-Host "   $secretSeparator" -ForegroundColor Yellow
-                
+
                 foreach ($secret in $allSecrets) {
                     Write-Host "`n   VAULT: $($secret.Vault)" -ForegroundColor Cyan
                     Write-Host "   SECRET NAME: $($secret.'Secret Name')" -ForegroundColor White
@@ -2020,11 +2009,11 @@ function Show-ResourcesSummary {
                     $lineSeparator = "-" * 78
                     Write-Host "   $lineSeparator" -ForegroundColor Gray
                 }
-                
+
                 if ($allSecrets.Count -gt 10) {
                     Write-Host "`n   ... showing first 10 secrets (see JSON output for complete list)" -ForegroundColor Gray
                 }
-                
+
                 # Show any secrets with actual values
                 $secretsWithValues = $allSecrets | Where-Object { $_.'Value Retrieved' -eq "Yes" }
                 if ($secretsWithValues.Count -gt 0) {
@@ -2058,12 +2047,12 @@ function Show-ResourcesSummary {
             }
         }
     }
-    
+
     # Web Apps & Function Apps
     $webApps = @()
     if ($Resources.WebApps) { $webApps += $Resources.WebApps }
     if ($Resources.AzureFunctions) { $webApps += $Resources.AzureFunctions }
-    
+
     if ($webApps.Count -gt 0) {
         Write-Host "`n* Web Apps & Functions ($($webApps.Count) total)" -ForegroundColor Yellow
         $webAppTable = $webApps | Select-Object -First 10 | ForEach-Object {
@@ -2077,12 +2066,12 @@ function Show-ResourcesSummary {
             }
         }
         $webAppTable | Format-Table -AutoSize | Out-String | Write-Host
-        
+
         if ($webApps.Count -gt 10) {
             Write-Host "   ... and $($webApps.Count - 10) more (see JSON output for complete list)" -ForegroundColor Gray
         }
     }
-    
+
     # Resource Groups
     if ($Resources.ResourceGroups -and $Resources.ResourceGroups.Count -gt 0) {
         Write-Host "`n* Resource Groups ($($Resources.ResourceGroups.Count) total)" -ForegroundColor Yellow
@@ -2096,11 +2085,11 @@ function Show-ResourcesSummary {
             }
         }
         $rgTable | Format-Table -AutoSize | Out-String | Write-Host
-        
+
         if ($Resources.ResourceGroups.Count -gt 15) {
             Write-Host "   ... and $($Resources.ResourceGroups.Count - 15) more (see JSON output for complete list)" -ForegroundColor Gray
         }
-        
+
         # Show resource groups with high activity
         $activeRgs = $Resources.ResourceGroups | Where-Object { $_.DeploymentCount -gt 5 -or $_.RoleAssignmentCount -gt 3 } | Select-Object -First 5
         if ($activeRgs.Count -gt 0) {
@@ -2109,7 +2098,7 @@ function Show-ResourcesSummary {
                 Write-Host "     - $($rg.Name): $($rg.DeploymentCount) deployments, $($rg.RoleAssignmentCount) role assignments" -ForegroundColor White
             }
         }
-        
+
         # Show deployments with extracted parameters (potential sensitive data)
         $deploymentsWithParams = @()
         foreach ($rg in $Resources.ResourceGroups) {
@@ -2128,25 +2117,25 @@ function Show-ResourcesSummary {
                 }
             }
         }
-        
+
         if ($deploymentsWithParams.Count -gt 0) {
             Write-Host "`n   *** DEPLOYMENTS WITH EXTRACTED PARAMETERS ***" -ForegroundColor Red
             Write-Host "   WARNING: Found $($deploymentsWithParams.Count) deployment(s) with accessible parameters - potential sensitive data!" -ForegroundColor Yellow
-            
+
             foreach ($dep in $deploymentsWithParams | Select-Object -First 5) {
                 Write-Host "`n   Resource Group: $($dep.ResourceGroup)" -ForegroundColor Cyan
                 Write-Host "   Deployment: $($dep.DeploymentName)" -ForegroundColor White
                 Write-Host "   Parameters Found: $($dep.ParameterCount)" -ForegroundColor Yellow
                 Write-Host "   Status: $($dep.Status)" -ForegroundColor Gray
                 Write-Host "   Timestamp: $($dep.Timestamp)" -ForegroundColor Gray
-                
+
                 # Display actual parameter names and values for immediate visibility
                 if ($dep.Parameters -and $dep.Parameters.PSObject.Properties.Count -gt 0) {
                     Write-Host "`n   PARAMETER DETAILS:" -ForegroundColor Red
                     foreach ($param in $dep.Parameters.PSObject.Properties) {
                         Write-Host "   • Parameter: $($param.Name)" -ForegroundColor Yellow
                         Write-Host "     Value: $($param.Value)" -ForegroundColor White
-                        
+
                         # Highlight potentially sensitive parameter names
                         $sensitiveKeywords = @('password', 'secret', 'key', 'token', 'connection', 'auth', 'credential', 'pass', 'pwd')
                         $isSensitive = $sensitiveKeywords | Where-Object { $param.Name -like "*$_*" -or $param.Value -like "*$_*" }
@@ -2156,26 +2145,26 @@ function Show-ResourcesSummary {
                         Write-Host ""
                     }
                 }
-                
+
                 Write-Host "   Command to view: Get-AzResourceGroupDeployment -ResourceGroupName '$($dep.ResourceGroup)' -Name '$($dep.DeploymentName)'" -ForegroundColor Cyan
             }
-            
+
             if ($deploymentsWithParams.Count -gt 5) {
                 Write-Host "`n   ... and $($deploymentsWithParams.Count - 5) more deployments with parameters (see JSON output)" -ForegroundColor Gray
             }
-            
+
             Write-Host "`n   SECURITY IMPACT:" -ForegroundColor Red
             Write-Host "   - Deployment parameters may contain passwords, connection strings, API keys" -ForegroundColor Yellow
             Write-Host "   - This data is accessible to anyone with Reader permissions on the resource group" -ForegroundColor Yellow
             Write-Host "   - Review the JSON output for complete parameter details" -ForegroundColor Yellow
         }
     }
-    
+
     # Azure AD / Microsoft Graph Information
     if ($Resources.TenantUsers -or $Resources.TenantGroups -or $Resources.TenantApplications) {
         Write-Host "`n* Azure AD / Microsoft Graph Objects" -ForegroundColor Yellow
         $adStats = @()
-        
+
         if ($Resources.TenantUsers) {
             $adStats += "$($Resources.TenantUsers.Users.Count) users"
         }
@@ -2186,11 +2175,11 @@ function Show-ResourcesSummary {
             $adStats += "$($Resources.TenantApplications.Applications.Count) applications"
             $adStats += "$($Resources.TenantApplications.ServicePrincipals.Count) service principals"
         }
-        
+
         if ($adStats.Count -gt 0) {
             Write-Host "   $($adStats -join ' | ')" -ForegroundColor Cyan
         }
-        
+
         # Show applications with secrets if available
         if ($Resources.TenantApplications -and $Resources.TenantApplications.Analysis.ApplicationsWithSecrets -gt 0) {
             Write-Host "   WARNING: $($Resources.TenantApplications.Analysis.ApplicationsWithSecrets) applications have secrets/certificates" -ForegroundColor Yellow
@@ -2203,15 +2192,15 @@ function Show-SecurityHighlights {
     param(
         [hashtable]$Resources
     )
-    
+
     $separator = "-" * 80
     Write-Host ""
     Write-Host $separator -ForegroundColor Red
     Write-Host " SECURITY HIGHLIGHTS & RECOMMENDATIONS" -ForegroundColor Red
     Write-Host $separator -ForegroundColor Red
-    
+
     $findings = @()
-    
+
     # Check for public storage accounts
     if ($Resources.StorageAccounts) {
         $publicStorage = $Resources.StorageAccounts | Where-Object { $_.AllowBlobPublicAccess -eq $true }
@@ -2219,28 +2208,28 @@ function Show-SecurityHighlights {
             $findings += "WARNING: $($publicStorage.Count) storage accounts allow public blob access"
         }
     }
-    
+
     # Check for admin/owner role assignments
     if ($Resources.SubscriptionRoleAssignments) {
-        $adminRoles = $Resources.SubscriptionRoleAssignments | Where-Object { 
-            $_.RoleDefinitionName -in @("Owner", "Contributor", "User Access Administrator") 
+        $adminRoles = $Resources.SubscriptionRoleAssignments | Where-Object {
+            $_.RoleDefinitionName -in @("Owner", "Contributor", "User Access Administrator")
         }
         if ($adminRoles.Count -gt 0) {
             $findings += "HIGH-PRIVILEGE: $($adminRoles.Count) high-privilege role assignments (Owner/Contributor/User Access Admin)"
         }
     }
-    
+
     # Check for Key Vault secrets
     if ($Resources.KeyVaults) {
-        $secretsFound = ($Resources.KeyVaults | ForEach-Object { 
+        $secretsFound = ($Resources.KeyVaults | ForEach-Object {
             if ($_.SecretsInfo -and $_.SecretsInfo.Secrets) { $_.SecretsInfo.Secrets.Count } else { 0 }
         } | Measure-Object -Sum).Sum
-        
+
         if ($secretsFound -gt 0) {
             $findings += "SECRETS: $secretsFound secrets discovered across $($Resources.KeyVaults.Count) Key Vaults"
         }
     }
-    
+
     # Check for VMs
     if ($Resources.VirtualMachines) {
         $runningVMs = $Resources.VirtualMachines | Where-Object { $_.PowerState -eq "VM running" }
@@ -2248,12 +2237,12 @@ function Show-SecurityHighlights {
             $findings += "COMPUTE: $($runningVMs.Count) running virtual machines detected"
         }
     }
-    
+
     # Check for public IPs
     if ($Resources.PublicIPs) {
         $findings += "NETWORK: $($Resources.PublicIPs.Count) public IP addresses allocated"
     }
-    
+
     # Resource Groups with role assignments
     if ($Resources.ResourceGroups) {
         $rgWithRoles = $Resources.ResourceGroups | Where-Object { $_.RoleAssignmentCount -gt 0 }
@@ -2262,21 +2251,21 @@ function Show-SecurityHighlights {
             $findings += "RBAC: $totalRgRoles role assignments across $($rgWithRoles.Count) resource groups"
         }
     }
-    
+
     # Azure AD / Microsoft Graph findings
     if ($Resources.TenantApplications -and $Resources.TenantApplications.Analysis.ApplicationsWithSecrets -gt 0) {
         $findings += "APPS: $($Resources.TenantApplications.Analysis.ApplicationsWithSecrets) applications with stored secrets/certificates"
     }
-    
+
     # Owned objects - critical for privilege escalation
     if ($Resources.OwnedObjects -and $Resources.OwnedObjects.Analysis.PrivilegeEscalationOpportunities -gt 0) {
         $findings += "PRIVILEGE ESCALATION: $($Resources.OwnedObjects.Analysis.PrivilegeEscalationOpportunities) owned applications detected - you can create new secrets!"
     }
-    
+
     if ($Resources.OwnedObjects -and $Resources.OwnedObjects.Analysis.TotalOwnedObjects -gt 0) {
         $findings += "OWNED OBJECTS: $($Resources.OwnedObjects.Analysis.TotalOwnedObjects) total objects owned by current user"
     }
-    
+
     # Check for deployments with extracted parameters (potential sensitive data exposure)
     if ($Resources.ResourceGroups) {
         $deploymentsWithParams = 0
@@ -2291,23 +2280,23 @@ function Show-SecurityHighlights {
                 }
             }
         }
-        
+
         if ($deploymentsWithParams -gt 0) {
             $findings += "DEPLOYMENT PARAMETERS: $totalParameters parameters extracted from $deploymentsWithParams deployments - potential sensitive data exposure!"
         }
     }
-    
+
     if ($Resources.TenantUsers) {
         $findings += "IDENTITY: $($Resources.TenantUsers.Users.Count) Azure AD users enumerated"
     }
-    
+
     if ($findings.Count -eq 0) {
         Write-Host "[OK] No immediate security concerns identified" -ForegroundColor Green
     } else {
         foreach ($finding in $findings) {
             Write-Host "   $finding" -ForegroundColor Yellow
         }
-        
+
         Write-Host "`nRECOMMENDED ACTIONS:" -ForegroundColor Cyan
         Write-Host "   - Review role assignments for least privilege principle" -ForegroundColor White
         Write-Host "   - Audit Key Vault access policies and secret usage" -ForegroundColor White
@@ -2315,7 +2304,7 @@ function Show-SecurityHighlights {
         Write-Host "   - Check VM security configurations and update status" -ForegroundColor White
         Write-Host "   - Review application secrets and certificate expiration dates" -ForegroundColor White
         Write-Host "   - Validate resource group access permissions" -ForegroundColor White
-        
+
         # Add privilege escalation guidance if owned applications found
         if ($Resources.OwnedObjects -and $Resources.OwnedObjects.Analysis.PrivilegeEscalationOpportunities -gt 0) {
             Write-Host "`nPRIVILEGE ESCALATION OPPORTUNITIES:" -ForegroundColor Red
@@ -2337,25 +2326,25 @@ function Show-OwnedApplicationsDetails {
         [array]$Applications,
         [string]$Title = "OWNED APPLICATIONS - PRIVILEGE ESCALATION OPPORTUNITIES"
     )
-    
+
     if (-not $Applications -or $Applications.Count -eq 0) {
         return
     }
-    
+
     $ownedApps = $Applications | Where-Object { $_.IsOwned -eq $true }
-    
+
     if ($ownedApps.Count -eq 0) {
         return
     }
-    
+
     $separator = "=" * 80
     Write-Host ""
     Write-Host $separator -ForegroundColor Red
     Write-Host " $Title" -ForegroundColor Red
     Write-Host $separator -ForegroundColor Red
-    
+
     Write-Host "`nYou own $($ownedApps.Count) application(s). You can create new secrets for privilege escalation!" -ForegroundColor Yellow
-    
+
     foreach ($app in $ownedApps) {
         Write-Host "`n>>> Application: $($app.DisplayName)" -ForegroundColor Cyan
         Write-Host "    App ID: $($app.AppId)" -ForegroundColor White
@@ -2364,20 +2353,20 @@ function Show-OwnedApplicationsDetails {
             Write-Host "    Current Secrets: $($app.PasswordCredentials) passwords, $($app.KeyCredentials) certificates" -ForegroundColor Yellow
         }
         Write-Host "    Created: $($app.CreatedDateTime)" -ForegroundColor Gray
-        
+
         Write-Host "`n    PRIVILEGE ESCALATION COMMANDS:" -ForegroundColor Red
         Write-Host "    1. Create new secret: az ad app credential reset --id $($app.AppId)" -ForegroundColor Cyan
         Write-Host "    2. Authenticate as app: az login --service-principal -u $($app.AppId) -p <NEW_SECRET> --tenant <TENANT_ID>" -ForegroundColor Cyan
         Write-Host "    3. Check app permissions: az ad app permission list --id $($app.AppId)" -ForegroundColor Cyan
         Write-Host "    4. Check role assignments: az role assignment list --assignee $($app.AppId)" -ForegroundColor Cyan
     }
-    
+
     Write-Host "`nIMPORTANT NOTES:" -ForegroundColor Yellow
     Write-Host "- Creating new secrets may alert administrators" -ForegroundColor White
     Write-Host "- Check the application's permissions and role assignments first" -ForegroundColor White
     Write-Host "- The application may have elevated privileges in Azure AD or Azure resources" -ForegroundColor White
     Write-Host "- Document findings for security assessment reporting" -ForegroundColor White
-    
+
     $separator = "=" * 80
     Write-Host $separator -ForegroundColor Red
 }
@@ -2387,13 +2376,13 @@ function Show-QuickStats {
     param(
         [hashtable]$Summary
     )
-    
+
     $separator = "-" * 40
     Write-Host ""
     Write-Host $separator -ForegroundColor Blue
     Write-Host " QUICK STATISTICS" -ForegroundColor Blue
     Write-Host $separator -ForegroundColor Blue
-    
+
     $statsTable = @(
         [PSCustomObject]@{ 'Resource Type' = 'Virtual Machines'; 'Count' = $Summary.VirtualMachines }
         [PSCustomObject]@{ 'Resource Type' = 'Storage Accounts'; 'Count' = $Summary.StorageAccounts }
@@ -2404,7 +2393,7 @@ function Show-QuickStats {
         [PSCustomObject]@{ 'Resource Type' = 'Role Assignments'; 'Count' = $Summary.SubscriptionRoleAssignments }
         [PSCustomObject]@{ 'Resource Type' = 'Resource Groups'; 'Count' = $Summary.ResourceGroups }
     )
-    
+
     $statsTable | Format-Table -AutoSize | Out-String | Write-Host
 }
 
@@ -2419,32 +2408,32 @@ function Get-KeyVaultSecrets {
     param(
         [Parameter(Mandatory=$true)]
         [string]$KeyVaultName,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$VaultUri,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$SubscriptionId
     )
-    
+
     $secrets = @()
     $secretsFound = $false
-    
+
     try {
         Write-Debug "Attempting to retrieve secrets from Key Vault: $KeyVaultName"
         Write-Debug "Vault URI: $VaultUri"
-        
+
         # Method 1: Azure CLI (often most successful in CTF scenarios)
         Write-Debug "Method 1: Attempting Azure CLI secret enumeration..."
         try {
             $azCliAvailable = Get-Command az -ErrorAction SilentlyContinue
             if ($azCliAvailable) {
                 Write-Debug "Azure CLI detected, attempting secret list for Key Vault: $KeyVaultName"
-                
+
                 # First try with --include-managed flag (newer Azure CLI versions) - this is crucial for managed secrets
                 Write-Debug "Attempting CLI with --include-managed flag..."
                 $azCliOutput = & az keyvault secret list --vault-name $KeyVaultName --include-managed --output json --only-show-errors 2>&1
-                
+
                 # Check if the error is SSL-related and enable global SSL bypass
                 if ($azCliOutput -and ($azCliOutput -like "*CERTIFICATE_VERIFY_FAILED*" -or $azCliOutput -like "*SSL*" -or $azCliOutput -like "*certificate*")) {
                     if (-not $Script:SSLBypassEnabled) {
@@ -2453,27 +2442,27 @@ function Get-KeyVaultSecrets {
                         $azCliOutput = & az keyvault secret list --vault-name $KeyVaultName --include-managed --output json --only-show-errors 2>$null
                     }
                 }
-                
+
                 # If that fails, try without --include-managed (some environments don't support this flag)
                 if (-not $azCliOutput -or $azCliOutput -eq "[]" -or $azCliOutput -like "*ERROR*") {
                     Write-Debug "Retrying without --include-managed flag..."
                     $azCliOutput = & az keyvault secret list --vault-name $KeyVaultName --output json --only-show-errors 2>$null
                 }
-                
+
                 # Final fallback: try with verbose error output for debugging
                 if (-not $azCliOutput -or $azCliOutput -eq "[]" -or $azCliOutput -like "*ERROR*") {
                     Write-Debug "Final attempt with full error output..."
                     $azCliOutput = & az keyvault secret list --vault-name $KeyVaultName --output json 2>&1
                 }
-                
+
                 if ($azCliOutput -and $azCliOutput -ne "[]" -and -not ($azCliOutput -like "*ERROR*")) {
                     try {
                         $azSecrets = $azCliOutput | ConvertFrom-Json -ErrorAction SilentlyContinue
-                        
+
                         if ($azSecrets -and $azSecrets.Count -gt 0) {
                             Write-Debug "Azure CLI found $($azSecrets.Count) secrets in Key Vault $KeyVaultName"
                             $secretsFound = $true
-                            
+
                             foreach ($azSecret in $azSecrets) {
                                 $secretInfo = @{
                                     Name = $azSecret.name
@@ -2491,12 +2480,12 @@ function Get-KeyVaultSecrets {
                                     Source = "Azure CLI"
                                     RetrievalMethod = "az keyvault secret list"
                                 }
-                                
+
                                 # Try to get the actual secret value using Azure CLI
                                 try {
                                     Write-Debug "Attempting to retrieve secret value for: $($azSecret.name)"
                                     $secretValueOutput = & az keyvault secret show --vault-name $KeyVaultName --name $azSecret.name --output json --only-show-errors 2>$null
-                                    
+
                                     if ($secretValueOutput -and -not ($secretValueOutput -like "*ERROR*")) {
                                         $secretValueObj = $secretValueOutput | ConvertFrom-Json -ErrorAction SilentlyContinue
                                         if ($secretValueObj -and $secretValueObj.value) {
@@ -2508,7 +2497,7 @@ function Get-KeyVaultSecrets {
                                 } catch {
                                     Write-Debug "Could not retrieve secret value for $($azSecret.name): $($_.Exception.Message)"
                                 }
-                                
+
                                 $secrets += [pscustomobject]$secretInfo
                             }
                         }
@@ -2525,34 +2514,34 @@ function Get-KeyVaultSecrets {
         } catch {
             Write-Debug "Azure CLI method failed: $($_.Exception.Message)"
         }
-        
+
         # Method 2: Direct Key Vault REST API with multiple approaches (if CLI didn't work)
         if (-not $secretsFound) {
             Write-Debug "Method 2: Attempting direct Key Vault REST API calls..."
-            
+
             # Get available tokens
             $tokensToTry = @()
-            
+
             # Add Key Vault token first (highest priority if available from service principal auth)
             if ($Script:KeyVaultToken) {
                 $tokensToTry += @{ Token = $Script:KeyVaultToken; Type = "KeyVault (Service Principal)" }
                 Write-Debug "Will try Key Vault token from Service Principal authentication"
             }
-            
-            if ($AccessTokenARM) { 
+
+            if ($AccessTokenARM) {
                 $tokensToTry += @{ Token = $AccessTokenARM; Type = "ARM" }
                 Write-Debug "Will try ARM token for Key Vault access"
             }
-            if ($AccessTokenGraph) { 
+            if ($AccessTokenGraph) {
                 $tokensToTry += @{ Token = $AccessTokenGraph; Type = "Graph" }
                 Write-Debug "Will try Graph token for Key Vault access"
             }
-            
+
             # Try to get a Key Vault specific token if we have Azure CLI
             try {
                 if ($azCliAvailable) {
                     $kvTokenOutput = & az account get-access-token --resource=https://vault.azure.net --output json --only-show-errors 2>&1
-                    
+
                     # Check for SSL errors and enable bypass if needed
                     if ($kvTokenOutput -and ($kvTokenOutput -like "*CERTIFICATE_VERIFY_FAILED*" -or $kvTokenOutput -like "*SSL*" -or $kvTokenOutput -like "*certificate*")) {
                         if (-not $Script:SSLBypassEnabled) {
@@ -2560,7 +2549,7 @@ function Get-KeyVaultSecrets {
                             $kvTokenOutput = & az account get-access-token --resource=https://vault.azure.net --output json --only-show-errors 2>$null
                         }
                     }
-                    
+
                     if ($kvTokenOutput -and -not ($kvTokenOutput -like "*ERROR*")) {
                         $kvTokenObj = $kvTokenOutput | ConvertFrom-Json -ErrorAction SilentlyContinue
                         if ($kvTokenObj -and $kvTokenObj.accessToken) {
@@ -2573,22 +2562,22 @@ function Get-KeyVaultSecrets {
             } catch {
                 Write-Debug "Could not obtain Key Vault token via CLI: $($_.Exception.Message)"
             }
-            
+
             if ($tokensToTry.Count -eq 0) {
                 Write-Debug "No tokens available for REST API calls"
             } else {
                 # Try multiple API versions and approaches
                 $apiVersions = @("7.4", "7.3", "7.2", "7.1")
                 $includeManaged = @($true, $false)
-                
+
                 foreach ($tokenInfo in $tokensToTry) {
                     if ($secretsFound) { break }
-                    
+
                     Write-Debug "Trying $($tokenInfo.Type) token for Key Vault access..."
-                    
+
                     foreach ($apiVersion in $apiVersions) {
                         if ($secretsFound) { break }
-                        
+
                         foreach ($includeManagedParam in $includeManaged) {
                             try {
                                 # Build URI with different parameters
@@ -2596,25 +2585,25 @@ function Get-KeyVaultSecrets {
                                 if ($includeManagedParam) {
                                     $secretsListUri += "&includeManagedSecrets=true"
                                 }
-                                
+
                                 Write-Debug "Attempting REST API call: $secretsListUri (Token: $($tokenInfo.Type))"
-                                
+
                                 $headers = @{
                                     'Authorization' = "Bearer $($tokenInfo.Token)"
                                     'Content-Type' = 'application/json'
                                     'User-Agent' = 'Enum-AzureARM/2.0'
                                 }
-                                
+
                                 # SSL handling is now managed globally, so just make the request
                                 $secretsListResponse = Invoke-RestMethod -Uri $secretsListUri -Headers $headers -Method GET -ErrorAction Stop
-                                
+
                                 if ($secretsListResponse -and $secretsListResponse.value -and $secretsListResponse.value.Count -gt 0) {
                                     Write-Debug "SUCCESS: Found $($secretsListResponse.value.Count) secrets via REST API (Token: $($tokenInfo.Type), API: $apiVersion, Managed: $includeManagedParam)"
                                     $secretsFound = $true
-                                    
+
                                     foreach ($secret in $secretsListResponse.value) {
                                         $secretProperties = if ($secret.properties) { $secret.properties } else { $secret.attributes }
-                                        
+
                                         $secretInfo = @{
                                             Name = if ($secret.name) { $secret.name } else { ($secret.id -split '/')[-1] }
                                             Id = $secret.id
@@ -2632,20 +2621,20 @@ function Get-KeyVaultSecrets {
                                             Source = "REST API ($($tokenInfo.Type) Token)"
                                             RetrievalMethod = "REST API v$apiVersion"
                                         }
-                                        
+
                                         if ($secret.managed -eq $true) {
                                             $secretInfo.SecretType = "Managed Secret"
                                             Write-Debug "Found managed secret via REST API: $($secretInfo.Name)"
                                         } else {
                                             $secretInfo.SecretType = "User Secret"
                                         }
-                                        
+
                                         # Try to get the actual secret value
                                         $secretName = $secretInfo.Name
                                         try {
                                             foreach ($apiVer in @("7.4", "7.3", "7.2")) {
                                                 $secretValueUri = "$($VaultUri.TrimEnd('/'))/secrets/$secretName" + "?api-version=$apiVer"
-                                                
+
                                                 try {
                                                     $secretValue = Invoke-RestMethod -Uri $secretValueUri -Headers $headers -Method GET -ErrorAction Stop
                                                     if ($secretValue -and $secretValue.value) {
@@ -2661,12 +2650,12 @@ function Get-KeyVaultSecrets {
                                         } catch {
                                             Write-Debug "Could not retrieve secret value for $secretName : $($_.Exception.Message)"
                                         }
-                                        
+
                                         $secrets += [pscustomobject]$secretInfo
                                     }
                                     break
                                 }
-                                
+
                             } catch {
                                 Write-Debug "REST API attempt failed (Token: $($tokenInfo.Type), API: $apiVersion, Managed: $includeManagedParam): $($_.Exception.Message)"
                             }
@@ -2675,24 +2664,24 @@ function Get-KeyVaultSecrets {
                 }
             }
         }
-        
+
         # Method 3: ARM Resource Provider API (alternative approach)
         if (-not $secretsFound -and $AccessTokenARM -and $SubscriptionId) {
             Write-Debug "Method 3: Attempting ARM Resource Provider API..."
             try {
                 $armSecretsUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.KeyVault/vaults/$KeyVaultName/secrets?api-version=2023-02-01"
-                
+
                 # Try to get the resource group from Key Vault resource info
                 if ($script:currentResourceGroup) {
                     $armSecretsUri = $armSecretsUri -replace "resourceGroups/\$ResourceGroupName", "resourceGroups/$script:currentResourceGroup"
-                    
+
                     Write-Debug "Attempting ARM Resource Provider API: $armSecretsUri"
                     $armSecretsResponse = Invoke-ARMRequest -Uri $armSecretsUri
-                    
+
                     if ($armSecretsResponse -and $armSecretsResponse.value) {
                         Write-Debug "Found $($armSecretsResponse.value.Count) secrets via ARM Resource Provider API"
                         $secretsFound = $true
-                        
+
                         foreach ($secret in $armSecretsResponse.value) {
                             $secretInfo = @{
                                 Name = $secret.name
@@ -2704,7 +2693,7 @@ function Get-KeyVaultSecrets {
                                 RetrievalMethod = "ARM Management API"
                                 ValueRetrieved = $false
                             }
-                            
+
                             $secrets += [pscustomobject]$secretInfo
                         }
                     }
@@ -2713,7 +2702,7 @@ function Get-KeyVaultSecrets {
                 Write-Debug "ARM Resource Provider API failed: $($_.Exception.Message)"
             }
         }
-        
+
         # Final status reporting
         if ($secretsFound) {
             Write-Debug "SUCCESS: Found $($secrets.Count) secrets in Key Vault $KeyVaultName"
@@ -2726,7 +2715,7 @@ function Get-KeyVaultSecrets {
             Write-Debug "  4. Managed secrets require specific Azure CLI context"
             Write-Debug "  5. Network access restrictions (firewall, private endpoint)"
         }
-        
+
     } catch {
         Write-Debug "Failed to retrieve secrets from Key Vault $KeyVaultName : $($_.Exception.Message)"
         return @{
@@ -2742,7 +2731,7 @@ function Get-KeyVaultSecrets {
             }
         }
     }
-    
+
     return @{
         KeyVaultName = $KeyVaultName
         VaultUri = $VaultUri
@@ -2767,14 +2756,14 @@ function Get-AzureBlueprints {
     param(
         [Parameter(Mandatory=$true)]
         [string]$SubscriptionId,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$ManagementGroupId = "root",
-        
+
         [Parameter(Mandatory=$false)]
         [switch]$IncludeStorageSearch
     )
-    
+
     $blueprintResults = @{
         SubscriptionBlueprints = @()
         ManagementGroupBlueprints = @()
@@ -2790,9 +2779,9 @@ function Get-AzureBlueprints {
         }
         AccessTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
     }
-    
+
     Write-Debug "Starting comprehensive Azure Blueprint enumeration for subscription: $SubscriptionId"
-    
+
     # Blueprint API endpoints
     $blueprintEndpoints = @(
         @{
@@ -2811,16 +2800,16 @@ function Get-AzureBlueprints {
             Description = "Blueprint assignments in subscription"
         }
     )
-    
+
     # Enumerate blueprints from different scopes
     foreach ($endpoint in $blueprintEndpoints) {
         try {
             Write-Debug "Querying: $($endpoint.Description)"
             $response = Invoke-ARMRequest -Uri $endpoint.Uri
-            
+
             if ($response -and $response.value) {
                 Write-Debug "Found $($response.value.Count) items for $($endpoint.Name)"
-                
+
                 switch ($endpoint.Name) {
                     "SubscriptionBlueprints" {
                         foreach ($blueprint in $response.value) {
@@ -2839,7 +2828,7 @@ function Get-AzureBlueprints {
                                 Versions = @()
                                 Artifacts = @()
                             }
-                            
+
                             # Get published versions of this blueprint
                             try {
                                 $versionsUri = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Blueprint/blueprints/$($blueprint.name)/versions?api-version=2018-11-01-preview"
@@ -2851,7 +2840,7 @@ function Get-AzureBlueprints {
                             } catch {
                                 Write-Debug "Could not retrieve versions for blueprint $($blueprint.name): $($_.Exception.Message)"
                             }
-                            
+
                             # Get artifacts for this blueprint
                             try {
                                 $artifactsUri = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Blueprint/blueprints/$($blueprint.name)/artifacts?api-version=2018-11-01-preview"
@@ -2864,11 +2853,11 @@ function Get-AzureBlueprints {
                             } catch {
                                 Write-Debug "Could not retrieve artifacts for blueprint $($blueprint.name): $($_.Exception.Message)"
                             }
-                            
+
                             $blueprintResults.SubscriptionBlueprints += [pscustomobject]$blueprintDetail
                         }
                     }
-                    
+
                     "ManagementGroupBlueprints" {
                         foreach ($blueprint in $response.value) {
                             $blueprintDetail = @{
@@ -2886,7 +2875,7 @@ function Get-AzureBlueprints {
                                 Versions = @()
                                 Artifacts = @()
                             }
-                            
+
                             # Get published versions
                             try {
                                 $versionsUri = "https://management.azure.com/providers/Microsoft.Management/managementGroups/$ManagementGroupId/providers/Microsoft.Blueprint/blueprints/$($blueprint.name)/versions?api-version=2018-11-01-preview"
@@ -2897,7 +2886,7 @@ function Get-AzureBlueprints {
                             } catch {
                                 Write-Debug "Could not retrieve versions for MG blueprint $($blueprint.name): $($_.Exception.Message)"
                             }
-                            
+
                             # Get artifacts
                             try {
                                 $artifactsUri = "https://management.azure.com/providers/Microsoft.Management/managementGroups/$ManagementGroupId/providers/Microsoft.Blueprint/blueprints/$($blueprint.name)/artifacts?api-version=2018-11-01-preview"
@@ -2909,11 +2898,11 @@ function Get-AzureBlueprints {
                             } catch {
                                 Write-Debug "Could not retrieve artifacts for MG blueprint $($blueprint.name): $($_.Exception.Message)"
                             }
-                            
+
                             $blueprintResults.ManagementGroupBlueprints += [pscustomobject]$blueprintDetail
                         }
                     }
-                    
+
                     "BlueprintAssignments" {
                         foreach ($assignment in $response.value) {
                             $assignmentDetail = @{
@@ -2930,7 +2919,7 @@ function Get-AzureBlueprints {
                                 Locks = $assignment.properties.locks
                                 ProvisioningState = $assignment.properties.provisioningState
                             }
-                            
+
                             $blueprintResults.BlueprintAssignments += [pscustomobject]$assignmentDetail
                         }
                     }
@@ -2938,7 +2927,7 @@ function Get-AzureBlueprints {
             } else {
                 Write-Debug "No items found for $($endpoint.Name)"
             }
-            
+
         } catch {
             Write-Debug "Failed to query $($endpoint.Name): $($_.Exception.Message)"
             if ($_.Exception.Response.StatusCode -eq 403) {
@@ -2948,43 +2937,43 @@ function Get-AzureBlueprints {
             }
         }
     }
-    
+
     # Search for blueprint-related files in storage accounts if requested
     if ($IncludeStorageSearch) {
         Write-Debug "Searching for blueprint-related files in storage accounts"
         try {
             $storageUri = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Storage/storageAccounts?api-version=2021-09-01"
             $storageAccounts = Invoke-ARMRequest -Uri $storageUri
-            
+
             if ($storageAccounts -and $storageAccounts.value) {
                 foreach ($account in $storageAccounts.value) {
                     # Focus on accounts that might contain blueprints
                     if ($account.name -like "*blueprint*" -or $account.name -like "*template*" -or $account.name -eq "examplestorage") {
                         Write-Debug "Checking blueprint-related storage account: $($account.name)"
-                        
+
                         try {
                             # Try to list containers
                             $containerUrl = "https://$($account.name).blob.core.windows.net/?comp=list"
-                            
+
                             # Attempt public access first
                             $containers = Invoke-RestMethod -Uri $containerUrl -Method GET -ErrorAction SilentlyContinue
-                            
+
                             if ($containers -and $containers.EnumerationResults.Containers.Container) {
                                 foreach ($container in $containers.EnumerationResults.Containers.Container) {
                                     $containerName = if ($container.Name) { $container.Name } else { $container }
-                                    
+
                                     if ($containerName -like "*blueprint*" -or $containerName -eq "blueprint") {
                                         Write-Debug "Found blueprint container: $containerName in $($account.name)"
-                                        
+
                                         # Try to list blobs in blueprint container
                                         $blobListUrl = "https://$($account.name).blob.core.windows.net/$containerName?restype=container&comp=list"
                                         try {
                                             $blobs = Invoke-RestMethod -Uri $blobListUrl -Method GET -ErrorAction SilentlyContinue
-                                            
+
                                             if ($blobs.EnumerationResults.Blobs.Blob) {
                                                 foreach ($blob in $blobs.EnumerationResults.Blobs.Blob) {
                                                     $blobName = if ($blob.Name) { $blob.Name } else { $blob }
-                                                    
+
                                                     $blueprintFile = @{
                                                         StorageAccount = $account.name
                                                         Container = $containerName
@@ -2995,7 +2984,7 @@ function Get-AzureBlueprints {
                                                         BlobUrl = "https://$($account.name).blob.core.windows.net/$containerName/$blobName"
                                                         DownloadAttempted = $false
                                                     }
-                                                    
+
                                                     # Try to download small files
                                                     if ($blob.Properties.ContentLength -and $blob.Properties.ContentLength -lt 1MB) {
                                                         try {
@@ -3010,7 +2999,7 @@ function Get-AzureBlueprints {
                                                             $blueprintFile.DownloadError = $_.Exception.Message
                                                         }
                                                     }
-                                                    
+
                                                     $blueprintResults.StorageBlueprintFiles += [pscustomobject]$blueprintFile
                                                 }
                                             }
@@ -3030,15 +3019,15 @@ function Get-AzureBlueprints {
             Write-Debug "Failed to search storage accounts for blueprints: $($_.Exception.Message)"
         }
     }
-    
+
     # Update summary
     $blueprintResults.Summary.TotalBlueprints = $blueprintResults.SubscriptionBlueprints.Count + $blueprintResults.ManagementGroupBlueprints.Count
     $blueprintResults.Summary.TotalAssignments = $blueprintResults.BlueprintAssignments.Count
     $blueprintResults.Summary.TotalArtifacts = $blueprintResults.BlueprintArtifacts.Count
     $blueprintResults.Summary.TotalStorageFiles = $blueprintResults.StorageBlueprintFiles.Count
-    
+
     Write-Debug "Blueprint enumeration complete: $($blueprintResults.Summary.TotalBlueprints) blueprints, $($blueprintResults.Summary.TotalAssignments) assignments, $($blueprintResults.Summary.TotalArtifacts) artifacts, $($blueprintResults.Summary.TotalStorageFiles) storage files"
-    
+
     return $blueprintResults
 }
 
@@ -3051,23 +3040,23 @@ function Get-StorageBlobs {
     param(
         [Parameter(Mandatory=$true)]
         [string]$StorageAccountName,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$ContainerName,
-        
+
         [Parameter(Mandatory=$true)]
         [array]$BlobList,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$OutputPath,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$StorageAccountKey = $null,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$AccountId = "unknown"
     )
-    
+
     try {
         # Create output directory structure
         $downloadPath = Join-Path $OutputPath "${AccountId}_${StorageAccountName}_${ContainerName}"
@@ -3075,24 +3064,24 @@ function Get-StorageBlobs {
             New-Item -ItemType Directory -Path $downloadPath -Force | Out-Null
             Write-Verbose "Created download directory: $downloadPath"
         }
-        
+
         $downloadResults = @{
             DownloadPath = $downloadPath
             SuccessfulDownloads = @()
             FailedDownloads = @()
             TotalFiles = $BlobList.Count
         }
-        
+
         Write-Output "  Downloading $($BlobList.Count) blobs to: $downloadPath"
-        
+
         foreach ($blob in $BlobList) {
             try {
                 $blobName = $blob.Name
                 $localFilePath = Join-Path $downloadPath $blobName
                 $downloadSuccess = $false
-                
+
                 Write-Debug "Attempting to download blob: $blobName"
-                
+
                 # Method 1: Try Azure CLI first (most reliable for RBAC)
                 try {
                     az storage blob download --account-name $StorageAccountName --container-name $ContainerName --name $blobName --file $localFilePath --auth-mode login 2>$null | Out-Null
@@ -3103,14 +3092,14 @@ function Get-StorageBlobs {
                 } catch {
                     Write-Debug "Azure CLI download failed for $blobName : $($_.Exception.Message)"
                 }
-                
+
                 # Method 2: Try PowerShell Az.Storage module
                 if (-not $downloadSuccess) {
                     try {
                         if (Get-Module -ListAvailable -Name Az.Storage) {
                             Import-Module Az.Storage -Force -ErrorAction SilentlyContinue
                             $ctx = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount -ErrorAction SilentlyContinue
-                            
+
                             if ($ctx) {
                                 Get-AzStorageBlobContent -Container $ContainerName -Blob $blobName -Destination $localFilePath -Context $ctx -Force -ErrorAction Stop | Out-Null
                                 if (Test-Path $localFilePath) {
@@ -3123,13 +3112,13 @@ function Get-StorageBlobs {
                         Write-Debug "Az.Storage download failed for $blobName : $($_.Exception.Message)"
                     }
                 }
-                
+
                 # Method 3: Try direct HTTP download with storage key (if available)
                 if (-not $downloadSuccess -and $StorageAccountKey) {
                     try {
                         $blobUrl = "https://$StorageAccountName.blob.core.windows.net/$ContainerName/$blobName"
                         $authHeaders = Get-StorageBlobAuthHeader -StorageAccountName $StorageAccountName -StorageAccountKey $StorageAccountKey -HttpMethod "GET" -ResourcePath "/$ContainerName/$blobName"
-                        
+
                         if ($authHeaders) {
                             Invoke-RestMethod -Uri $blobUrl -Headers $authHeaders -OutFile $localFilePath -ErrorAction Stop
                             if (Test-Path $localFilePath) {
@@ -3141,7 +3130,7 @@ function Get-StorageBlobs {
                         Write-Debug "Storage key download failed for $blobName : $($_.Exception.Message)"
                     }
                 }
-                
+
                 # Record results
                 if ($downloadSuccess) {
                     $fileInfo = Get-Item $localFilePath
@@ -3159,7 +3148,7 @@ function Get-StorageBlobs {
                     }
                     Write-Warning "    [FAIL] Failed to download: $blobName"
                 }
-                
+
             } catch {
                 $downloadResults.FailedDownloads += @{
                     BlobName = $blob.Name
@@ -3168,10 +3157,10 @@ function Get-StorageBlobs {
                 Write-Warning "    [ERROR] Error downloading $($blob.Name): $($_.Exception.Message)"
             }
         }
-        
+
         Write-Output "  Download complete: $($downloadResults.SuccessfulDownloads.Count)/$($downloadResults.TotalFiles) files successful"
         return $downloadResults
-        
+
     } catch {
         Write-Warning "Failed to download blobs from $StorageAccountName/$ContainerName : $($_.Exception.Message)"
         return @{
@@ -3193,29 +3182,29 @@ function Get-StorageBlobAuthHeader {
     param(
         [Parameter(Mandatory=$true)]
         [string]$StorageAccountName,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$StorageAccountKey,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$HttpMethod,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$ResourcePath,
-        
+
         [Parameter(Mandatory=$false)]
         [hashtable]$QueryParams = @{},
-        
+
         [Parameter(Mandatory=$false)]
         [string]$ContentType = "",
-        
+
         [Parameter(Mandatory=$false)]
         [string]$ContentLength = "0"
     )
-    
+
     try {
         $utcNow = [DateTime]::UtcNow.ToString("R")
-        
+
         # Build canonical resource string
         $canonicalResource = "/$StorageAccountName$ResourcePath"
         if ($QueryParams.Keys.Count -gt 0) {
@@ -3223,7 +3212,7 @@ function Get-StorageBlobAuthHeader {
             $paramString = ($sortedParams | ForEach-Object { "$($_.Name):$($_.Value)" }) -join "`n"
             $canonicalResource += "`n$paramString"
         }
-        
+
         # Build string to sign
         $stringToSign = @(
             $HttpMethod.ToUpper(),
@@ -3242,21 +3231,21 @@ function Get-StorageBlobAuthHeader {
             "x-ms-version:2020-10-02",
             $canonicalResource
         ) -join "`n"
-        
+
         # Create signature
         $keyBytes = [Convert]::FromBase64String($StorageAccountKey)
         $hmac = New-Object System.Security.Cryptography.HMACSHA256
         $hmac.Key = $keyBytes
         $signatureBytes = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($stringToSign))
         $signature = [Convert]::ToBase64String($signatureBytes)
-        
+
         # Return headers
         return @{
             "Authorization" = "SharedKey $StorageAccountName`:$signature"
             "x-ms-date" = $utcNow
             "x-ms-version" = "2020-10-02"
         }
-        
+
     } catch {
         Write-Warning "Failed to create storage auth header: $($_.Exception.Message)"
         return $null
@@ -3272,14 +3261,14 @@ function Get-StorageAccountDetails {
     param(
         [Parameter(Mandatory=$true)]
         [string]$StorageAccountId,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$StorageAccountName
     )
-    
+
     try {
         Write-Debug "Enumerating storage account details for: $StorageAccountName"
-        
+
         $storageDetails = @{
             Name = $StorageAccountName
             Id = $StorageAccountId
@@ -3291,7 +3280,7 @@ function Get-StorageAccountDetails {
             StorageContext = $null
             Error = $null
         }
-        
+
         # Get storage account keys (if we have permission)
         $storageAccountKey = $null
         try {
@@ -3303,7 +3292,7 @@ function Get-StorageAccountDetails {
                         Permissions = $key.permissions
                         CreationTime = $key.creationTime
                     }
-                    
+
                     # Use the first key for blob enumeration
                     if (-not $storageAccountKey -and $key.value) {
                         $storageAccountKey = $key.value
@@ -3316,7 +3305,7 @@ function Get-StorageAccountDetails {
             Write-Debug "Could not retrieve storage keys for $StorageAccountName : $($_.Exception.Message)"
             Write-Debug "Note: Storage Account Key access requires 'Storage Account Key Operator Service Role' or higher permissions"
         }
-        
+
         # Get blob service properties
         try {
             $blobProps = Invoke-ARMRequest -Uri "https://management.azure.com$StorageAccountId/blobServices/default?api-version=2022-05-01"
@@ -3331,13 +3320,13 @@ function Get-StorageAccountDetails {
         } catch {
             Write-Debug "Could not retrieve blob service properties for $StorageAccountName : $($_.Exception.Message)"
         }
-        
+
         # Get containers
         try {
             $containersResponse = Invoke-ARMRequest -Uri "https://management.azure.com$StorageAccountId/blobServices/default/containers?api-version=2022-05-01"
             if ($containersResponse -and $containersResponse.value) {
                 Write-Debug "Found $($containersResponse.value.Count) containers in $StorageAccountName"
-                
+
                 foreach ($container in $containersResponse.value) {
                     $containerDetail = @{
                         Name = $container.name
@@ -3350,32 +3339,32 @@ function Get-StorageAccountDetails {
                         BlobCount = 0
                         Error = $null
                     }
-                    
+
                     # Try multiple approaches to enumerate blobs
                     $blobEnumerated = $false
-                    
+
                     # Method 1: Use Storage REST API with account key (if available)
                     if ($storageAccountKey) {
                         try {
                             Write-Debug "Enumerating blobs using storage account key in container: $($container.name)"
-                            
+
                             $resourcePath = "/$($container.name)"
                             $queryParams = @{
                                 "restype" = "container"
                                 "comp" = "list"
                                 "maxresults" = "1000"  # Limit to first 1000 blobs for performance
                             }
-                            
+
                             $authHeaders = Get-StorageBlobAuthHeader -StorageAccountName $StorageAccountName -StorageAccountKey $storageAccountKey -HttpMethod "GET" -ResourcePath $resourcePath -QueryParams $queryParams
-                            
+
                             if ($authHeaders) {
                                 $blobUrl = "https://$StorageAccountName.blob.core.windows.net$resourcePath" + "?" + (($queryParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "&")
-                                
+
                                 $response = Invoke-RestMethod -Uri $blobUrl -Headers $authHeaders -Method GET -TimeoutSec 30 -ErrorAction Stop
-                                
+
                                 if ($response -and $response.EnumerationResults -and $response.EnumerationResults.Blobs) {
                                     $blobs = @()
-                                    
+
                                     # Handle both single blob and multiple blobs
                                     $blobList = $response.EnumerationResults.Blobs.Blob
                                     if ($blobList) {
@@ -3402,13 +3391,13 @@ function Get-StorageAccountDetails {
                                             }
                                         }
                                     }
-                                    
+
                                     $containerDetail.Blobs = $blobs
                                     $containerDetail.BlobCount = $blobs.Count
                                     $blobEnumerated = $true
-                                    
+
                                     Write-Debug "Found $($blobs.Count) blobs in container $($container.name) using storage key"
-                                    
+
                                 } else {
                                     $containerDetail.Blobs = @()
                                     $containerDetail.BlobCount = 0
@@ -3416,26 +3405,26 @@ function Get-StorageAccountDetails {
                                     Write-Debug "No blobs found in container $($container.name)"
                                 }
                             }
-                            
+
                         } catch {
                             Write-Debug "Failed to enumerate blobs using storage key in container $($container.name): $($_.Exception.Message)"
                         }
                     }
-                    
+
                     # Method 2: Try using Azure CLI (if available and authenticated)
                     if (-not $blobEnumerated) {
                         try {
                             Write-Debug "Attempting blob enumeration using Azure CLI for container: $($container.name)"
-                            
+
                             # Check if Azure CLI is available and authenticated
                             $azAccount = az account show 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
                             if ($azAccount) {
                                 $blobListJson = az storage blob list --account-name $StorageAccountName --container-name $container.name --auth-mode login --output json 2>$null
-                                
+
                                 if ($blobListJson -and $blobListJson -ne "[]") {
                                     $blobList = $blobListJson | ConvertFrom-Json
                                     $blobs = @()
-                                    
+
                                     foreach ($blob in $blobList) {
                                         $blobs += @{
                                             Name = $blob.name
@@ -3446,37 +3435,37 @@ function Get-StorageAccountDetails {
                                             BlobType = $blob.properties.blobType
                                         }
                                     }
-                                    
+
                                     $containerDetail.Blobs = $blobs
                                     $containerDetail.BlobCount = $blobs.Count
                                     $blobEnumerated = $true
-                                    
+
                                     Write-Debug "Found $($blobs.Count) blobs in container $($container.name) using Azure CLI"
                                 }
                             }
-                            
+
                         } catch {
                             Write-Debug "Failed to enumerate blobs using Azure CLI in container $($container.name): $($_.Exception.Message)"
                         }
                     }
-                    
+
                     # Method 3: Try using PowerShell Az.Storage module (if available)
                     if (-not $blobEnumerated) {
                         try {
                             Write-Debug "Attempting blob enumeration using Az.Storage module for container: $($container.name)"
-                            
+
                             if (Get-Module -ListAvailable -Name Az.Storage) {
                                 Import-Module Az.Storage -Force -ErrorAction SilentlyContinue
-                                
+
                                 # Try to get storage context using current Az context
                                 $ctx = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount -ErrorAction SilentlyContinue
-                                
+
                                 if ($ctx) {
                                     $blobList = Get-AzStorageBlob -Container $container.name -Context $ctx -ErrorAction SilentlyContinue
-                                    
+
                                     if ($blobList) {
                                         $blobs = @()
-                                        
+
                                         foreach ($blob in $blobList) {
                                             $blobs += @{
                                                 Name = $blob.Name
@@ -3487,21 +3476,21 @@ function Get-StorageAccountDetails {
                                                 BlobType = $blob.BlobType.ToString()
                                             }
                                         }
-                                        
+
                                         $containerDetail.Blobs = $blobs
                                         $containerDetail.BlobCount = $blobs.Count
                                         $blobEnumerated = $true
-                                        
+
                                         Write-Debug "Found $($blobs.Count) blobs in container $($container.name) using Az.Storage"
                                     }
                                 }
                             }
-                            
+
                         } catch {
                             Write-Debug "Failed to enumerate blobs using Az.Storage in container $($container.name): $($_.Exception.Message)"
                         }
                     }
-                    
+
                     # If all methods failed, provide informative message
                     if (-not $blobEnumerated) {
                         if (-not $storageAccountKey) {
@@ -3512,12 +3501,12 @@ function Get-StorageAccountDetails {
                             $containerDetail.Error = "All blob enumeration methods failed"
                         }
                     }
-                    
+
                     # Download blobs if enumeration was successful and blobs were found
                     if ($blobEnumerated -and $containerDetail.Blobs -and $containerDetail.Blobs.Count -gt 0 -and $containerDetail.Blobs[0] -is [hashtable]) {
                         try {
                             Write-Output "  Initiating blob download for container: $($container.name)"
-                            
+
                             # Determine account identifier for folder naming
                             $accountIdentifier = "unknown"
                             if ($AccountId) {
@@ -3532,13 +3521,13 @@ function Get-StorageAccountDetails {
                                     Write-Debug "Could not determine account identifier for download path"
                                 }
                             }
-                            
+
                             # Download blobs
                             $downloadResults = Get-StorageBlobs -StorageAccountName $StorageAccountName -ContainerName $container.name -BlobList $containerDetail.Blobs -OutputPath "Results" -StorageAccountKey $storageAccountKey -AccountId $accountIdentifier
-                            
+
                             # Add download results to container details
                             $containerDetail.DownloadResults = $downloadResults
-                            
+
                         } catch {
                             Write-Warning "Failed to download blobs from container $($container.name): $($_.Exception.Message)"
                             $containerDetail.DownloadResults = @{
@@ -3550,14 +3539,14 @@ function Get-StorageAccountDetails {
                     } else {
                         Write-Debug "Skipping blob download for container $($container.name) - no blobs enumerated or enumeration failed"
                     }
-                    
+
                     $storageDetails.Containers += $containerDetail
                 }
             } else {
                 # ARM API succeeded but returned no containers - try PowerShell fallback
                 Write-Output "  ARM API returned no containers - attempting PowerShell fallback method..."
-                Write-Debug "containersResponse exists: $($containersResponse -ne $null), has value: $($containersResponse.value -ne $null)"
-                
+                Write-Debug "containersResponse exists: $($null -ne $containersResponse), has value: $($null -ne $containersResponse.value)"
+
                 # Fallback: Try using Get-AzStorageContainer with storage account context
                 try {
                     # Extract resource group name from storage account ID
@@ -3566,24 +3555,24 @@ function Get-StorageAccountDetails {
                     Write-Debug "Storage Account ID: $StorageAccountId"
                     Write-Debug "Extracted resource group name: $resourceGroupName"
                     Write-Output "  Resource Group: $resourceGroupName (extracted from storage account ID)"
-                    
+
                     # Create storage account context
                     Write-Debug "Attempting to get storage account: $StorageAccountName in resource group: $resourceGroupName"
                     $storageAccount = Get-AzStorageAccount -ResourceGroupName $resourceGroupName -Name $StorageAccountName -ErrorAction Stop
                     Write-Debug "Successfully retrieved storage account object"
                     $ctx = $storageAccount.Context
                     Write-Debug "Successfully created storage context"
-                    
+
                     # Store the storage context for later use in downloads
                     $storageDetails.StorageContext = $ctx
                     Write-Debug "Successfully created and stored storage context for $StorageAccountName"
                     Write-Output "  Storage context created successfully for blob downloads"
-                    
+
                     # Get containers using storage context
                     $containers = Get-AzStorageContainer -Context $ctx -ErrorAction Stop
                     Write-Debug "Found $($containers.Count) containers using storage context fallback for $StorageAccountName"
                     Write-Output "  Successfully found $($containers.Count) containers using PowerShell fallback method"
-                    
+
                     foreach ($container in $containers) {
                         $containerDetail = @{
                             Name = $container.Name
@@ -3596,12 +3585,12 @@ function Get-StorageAccountDetails {
                             BlobCount = 0
                             Error = $null
                         }
-                        
+
                         # Try to enumerate blobs in this container
                         try {
                             Write-Debug "Enumerating blobs in container: $($container.Name)"
                             $blobs = Get-AzStorageBlob -Container $container.Name -Context $ctx -ErrorAction Stop
-                            
+
                             foreach ($blob in $blobs) {
                                 $blobDetail = @{
                                     Name = $blob.Name
@@ -3621,13 +3610,13 @@ function Get-StorageAccountDetails {
                             Write-Output "    Container '$($container.Name)': Blob enumeration failed - $($_.Exception.Message)"
                             $containerDetail.Error = "Could not enumerate blobs: $($_.Exception.Message)"
                         }
-                        
+
                         $storageDetails.Containers += $containerDetail
                     }
-                    
+
                     # Clear any previous error since fallback succeeded
                     $storageDetails.Error = $null
-                    
+
                 } catch {
                     Write-Debug "PowerShell fallback container enumeration also failed for $StorageAccountName : $($_.Exception.Message)"
                     Write-Output "  PowerShell fallback method also failed: $($_.Exception.Message)"
@@ -3637,7 +3626,7 @@ function Get-StorageAccountDetails {
         } catch {
             Write-Debug "Could not retrieve containers via ARM API for $StorageAccountName : $($_.Exception.Message)"
             Write-Output "  ARM container enumeration failed - attempting PowerShell fallback method..."
-            
+
             # Fallback: Try using Get-AzStorageContainer with storage account context
             Write-Debug "Attempting container enumeration using Get-AzStorageContainer fallback method"
             try {
@@ -3647,19 +3636,19 @@ function Get-StorageAccountDetails {
                 Write-Debug "Storage Account ID: $StorageAccountId"
                 Write-Debug "Extracted resource group name: $resourceGroupName"
                 Write-Output "  Resource Group: $resourceGroupName (extracted from storage account ID)"
-                
+
                 # Create storage account context
                 Write-Debug "Attempting to get storage account: $StorageAccountName in resource group: $resourceGroupName"
                 $storageAccount = Get-AzStorageAccount -ResourceGroupName $resourceGroupName -Name $StorageAccountName -ErrorAction Stop
                 Write-Debug "Successfully retrieved storage account object"
                 $ctx = $storageAccount.Context
                 Write-Debug "Successfully created storage context"
-                
+
                 # Get containers using storage context
                 $containers = Get-AzStorageContainer -Context $ctx -ErrorAction Stop
                 Write-Debug "Found $($containers.Count) containers using storage context fallback for $StorageAccountName"
                 Write-Output "  Successfully found $($containers.Count) containers using PowerShell fallback method"
-                
+
                 foreach ($container in $containers) {
                     $containerDetail = @{
                         Name = $container.Name
@@ -3672,12 +3661,12 @@ function Get-StorageAccountDetails {
                         BlobCount = 0
                         Error = $null
                     }
-                    
+
                     # Try to enumerate blobs in this container
                     try {
                         Write-Debug "Enumerating blobs in container: $($container.Name)"
                         $blobs = Get-AzStorageBlob -Container $container.Name -Context $ctx -ErrorAction Stop
-                        
+
                         foreach ($blob in $blobs) {
                             $blobDetail = @{
                                 Name = $blob.Name
@@ -3695,30 +3684,30 @@ function Get-StorageAccountDetails {
                         Write-Debug "Failed to enumerate blobs in container $($container.Name): $($_.Exception.Message)"
                         $containerDetail.Error = "Could not enumerate blobs: $($_.Exception.Message)"
                     }
-                    
+
                     $storageDetails.Containers += $containerDetail
                 }
-                
+
                 # Clear the error since fallback method succeeded
                 $storageDetails.Error = $null
-                
+
             } catch {
                 Write-Debug "Fallback container enumeration also failed for $StorageAccountName : $($_.Exception.Message)"
                 Write-Output "  PowerShell fallback method also failed: $($_.Exception.Message)"
                 $storageDetails.Error = "Could not retrieve containers via ARM API or storage context: $($_.Exception.Message)"
             }
         }
-        
+
         # Get IAM permissions on the storage account
         try {
             $permissions = Invoke-ARMRequest -Uri "https://management.azure.com$StorageAccountId/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01"
             if ($permissions -and $permissions.value) {
                 Write-Debug "Found $($permissions.value.Count) role assignments for $StorageAccountName"
-                
+
                 foreach ($perm in $permissions.value) {
                     $roleName = Get-RoleDefinitionName -RoleDefinitionId $perm.properties.roleDefinitionId
                     $principalName = Get-PrincipalName -PrincipalId $perm.properties.principalId
-                    
+
                     # Get detailed role definition for permissions analysis
                     $roleDetails = $null
                     try {
@@ -3735,7 +3724,7 @@ function Get-StorageAccountDetails {
                     } catch {
                         Write-Debug "Could not retrieve role definition details for $($perm.properties.roleDefinitionId)"
                     }
-                    
+
                     $storageDetails.Permissions += @{
                         PrincipalId = $perm.properties.principalId
                         PrincipalName = $principalName
@@ -3752,7 +3741,7 @@ function Get-StorageAccountDetails {
         } catch {
             Write-Debug "Could not retrieve IAM permissions for $StorageAccountName : $($_.Exception.Message)"
         }
-        
+
         # Get current user's effective permissions on the storage account
         try {
             # Try to get current user context
@@ -3760,16 +3749,16 @@ function Get-StorageAccountDetails {
             if ($UseCurrentUser) {
                 $currentUserContext = Get-AzContext -ErrorAction SilentlyContinue
             }
-            
+
             if ($currentUserContext -and $currentUserContext.Account.Id) {
                 Write-Debug "Analyzing effective permissions for current user: $($currentUserContext.Account.Id)"
-                
+
                 # Get user's role assignments on this storage account
-                $userPermissions = $storageDetails.Permissions | Where-Object { 
-                    $_.PrincipalName -like "*$($currentUserContext.Account.Id)*" -or 
-                    $_.PrincipalId -eq $currentUserContext.Account.Id 
+                $userPermissions = $storageDetails.Permissions | Where-Object {
+                    $_.PrincipalName -like "*$($currentUserContext.Account.Id)*" -or
+                    $_.PrincipalId -eq $currentUserContext.Account.Id
                 }
-                
+
                 $effectivePermissions = @{
                     UserId = $currentUserContext.Account.Id
                     UserType = $currentUserContext.Account.Type
@@ -3783,7 +3772,7 @@ function Get-StorageAccountDetails {
                         CanDeleteBlobs = $false
                     }
                 }
-                
+
                 # Analyze effective permissions
                 foreach ($perm in $userPermissions) {
                     if ($perm.RoleDetails) {
@@ -3791,39 +3780,39 @@ function Get-StorageAccountDetails {
                         $effectivePermissions.EffectiveDataActions += $perm.RoleDetails.DataActions
                     }
                 }
-                
+
                 # Determine blob-specific permissions
                 $allDataActions = $effectivePermissions.EffectiveDataActions
-                if ($allDataActions -contains "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read" -or 
-                    $allDataActions -contains "*" -or 
+                if ($allDataActions -contains "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read" -or
+                    $allDataActions -contains "*" -or
                     ($allDataActions -contains "Microsoft.Storage/storageAccounts/blobServices/*")) {
                     $effectivePermissions.BlobPermissions.CanReadBlobs = $true
                 }
-                
-                if ($allDataActions -contains "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action" -or 
+
+                if ($allDataActions -contains "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action" -or
                     $allDataActions -contains "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write" -or
                     $allDataActions -contains "*") {
                     $effectivePermissions.BlobPermissions.CanWriteBlobs = $true
                 }
-                
-                if ($allDataActions -contains "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete" -or 
+
+                if ($allDataActions -contains "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete" -or
                     $allDataActions -contains "*") {
                     $effectivePermissions.BlobPermissions.CanDeleteBlobs = $true
                 }
-                
+
                 if ($allDataActions -contains "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/list/action" -or
                     $effectivePermissions.BlobPermissions.CanReadBlobs) {
                     $effectivePermissions.BlobPermissions.CanListBlobs = $true
                 }
-                
+
                 $storageDetails.CurrentUserPermissions = $effectivePermissions
             }
         } catch {
             Write-Debug "Could not analyze current user permissions for $StorageAccountName : $($_.Exception.Message)"
         }
-        
+
         return $storageDetails
-        
+
     } catch {
         Write-Warning "Failed to get detailed storage account information for $StorageAccountName : $($_.Exception.Message)"
         return @{
@@ -3843,58 +3832,58 @@ function Get-StorageAccountFiles {
     param(
         [Parameter(Mandatory=$true)]
         [string]$StorageAccountName,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$StorageAccountKey,
-        
+
         [Parameter(Mandatory=$true)]
         [array]$ContainerDetails,
-        
+
         [Parameter(Mandatory=$false)]
         [string]$AccountId = "unknown",
-        
+
         [Parameter(Mandatory=$false)]
         [object]$StorageContext = $null
     )
-    
+
     try {
         Write-Output "  Initiating comprehensive file download for Storage Account: $StorageAccountName"
         Write-Output "  Processing $(@($ContainerDetails).Count) containers for file downloads..."
-        
+
         # Show container summary for debugging
         $normalContainers = @($ContainerDetails | Where-Object { $_.Blobs -and $_.Blobs.Count -gt 0 -and $_.Blobs[0] -isnot [string] })
         $blindDownloadContainers = @($ContainerDetails | Where-Object { $_.Error -and $_.Error -like "*blind download*" })
         $emptyContainers = @($ContainerDetails | Where-Object { (-not $_.Blobs -or $_.Blobs.Count -eq 0) -and (-not ($_.Error -and $_.Error -like "*blind download*")) })
-        
+
         Write-Output "    Container Analysis:"
         Write-Output "      Normal containers with enumerated blobs: $($normalContainers.Count)"
-        Write-Output "      Containers requiring blind download: $($blindDownloadContainers.Count)"  
+        Write-Output "      Containers requiring blind download: $($blindDownloadContainers.Count)"
         Write-Output "      Empty/inaccessible containers (will be skipped): $($emptyContainers.Count)"
-        
+
         # Show available authentication methods
-        $hasStorageKey = $StorageAccountKey -ne $null -and $StorageAccountKey -ne ""
-        $hasStorageContext = $StorageContext -ne $null
-        $hasAccessToken = $script:accessToken -ne $null -and $script:accessToken -ne ""
+        $hasStorageKey = $null -ne $StorageAccountKey -and $StorageAccountKey -ne ""
+        $hasStorageContext = $null -ne $StorageContext
+        $hasAccessToken = $null -ne $script:accessToken -and $script:accessToken -ne ""
         $hasAzureCLI = $false
         try {
             $azAccount = az account show 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
-            $hasAzureCLI = $azAccount -ne $null
+            $hasAzureCLI = $null -ne $azAccount
         } catch { }
-        
+
         Write-Output "    Available Authentication Methods:"
         Write-Output "      Storage Context: $(if ($hasStorageContext) { 'Available' } else { 'Not Available' })"
         Write-Output "      Storage Account Key: $(if ($hasStorageKey) { 'Available' } else { 'Not Available' })"
         Write-Output "      Azure CLI Login: $(if ($hasAzureCLI) { 'Available' } else { 'Not Available' })"
         Write-Output "      Bearer Token: $(if ($hasAccessToken) { 'Available' } else { 'Not Available' })"
-        
+
         # Note: Account identifier handling moved to individual file processing for better organization
-        
+
         # Create base Results directory
         $resultsDir = Join-Path -Path (Split-Path $script:MyInvocation.MyCommand.Path -Parent) -ChildPath "Results"
         if (-not (Test-Path $resultsDir)) {
             New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
         }
-        
+
         $downloadSummary = @{
             StorageAccountName = $StorageAccountName
             TotalContainers = $ContainerDetails.Count
@@ -3907,10 +3896,10 @@ function Get-StorageAccountFiles {
             DownloadFolders = @()
             Errors = @()
         }
-        
+
         foreach ($container in $ContainerDetails) {
             $isBlindDownload = $false
-            
+
             # Enhanced container processing logic - don't skip containers too aggressively
             if (-not $container.Blobs -or $container.Blobs.Count -eq 0) {
                 # If no blobs enumerated but container exists, offer blind download
@@ -3923,7 +3912,7 @@ function Get-StorageAccountFiles {
                     continue
                 }
             }
-            
+
             # Check if blobs are error messages (enumeration failure) but still allow processing
             if (-not $isBlindDownload -and $container.Blobs -and $container.Blobs.Count -gt 0 -and $container.Blobs[0] -is [string]) {
                 # If first blob is a string (error), check if we should do blind download
@@ -3936,31 +3925,31 @@ function Get-StorageAccountFiles {
                     continue
                 }
             }
-            
+
             # Check if this is a blind download attempt (fake blob entry)
             if ($container.Error -and $container.Error -like "*blind download*") {
                 $isBlindDownload = $true
                 Write-Debug "    Attempting blind download for container $($container.name)"
             }
-            
+
             try {
                 # Create organized folder structure: storageaccount_NAME_CONTAINER_NAME
                 $folderName = "storageaccount_$($StorageAccountName)_$($container.name)" -replace '[\\/:*?"<>|]', '_'
                 $downloadPath = Join-Path -Path $resultsDir -ChildPath $folderName
-                
+
                 if (-not (Test-Path $downloadPath)) {
                     New-Item -ItemType Directory -Path $downloadPath -Force | Out-Null
                     Write-Output "    Created download folder: $folderName"
                 }
-                
+
                 $downloadSummary.DownloadFolders += $folderName
                 $containerSuccess = 0
                 $containerFailed = 0
-                
+
                 # Handle blind download attempts
                 if ($isBlindDownload) {
                     Write-Output "    Attempting blind download for container: $($container.name) (trying common file names)"
-                    
+
                     # Try common blob/file names when we can't enumerate
                     $commonBlobNames = @(
                         'index.html', 'default.html', 'home.html', 'main.html',
@@ -3976,11 +3965,11 @@ function Get-StorageAccountFiles {
                         'style.css', 'main.css', 'theme.css', 'bootstrap.css',
                         'package.json', 'composer.json', 'requirements.txt', 'Gemfile'
                     )
-                    
+
                     # Add container-specific file names based on container name
                     $containerSpecificNames = @()
                     $containerNameLower = $container.name.ToLower()
-                    
+
                     # Add variations of the container name with common extensions
                     $containerSpecificNames += "$containerNameLower.json"
                     $containerSpecificNames += "$containerNameLower.jpg"
@@ -3992,29 +3981,29 @@ function Get-StorageAccountFiles {
                     $containerSpecificNames += "$containerNameLower.zip"
                     $containerSpecificNames += "$($containerNameLower)_backup.zip"
                     $containerSpecificNames += "$($containerNameLower)_data.csv"
-                    
+
                     # Specific patterns for known container types
                     switch -Wildcard ($containerNameLower) {
-                        "*blueprint*" { 
+                        "*blueprint*" {
                             $containerSpecificNames += @("template.json", "architecture.json", "design.pdf", "specification.pdf")
                         }
-                        "*backup*" { 
+                        "*backup*" {
                             $containerSpecificNames += @('backup.tar.gz', 'dump.sql', 'restore.sql', 'backup.bak')
                         }
-                        "*log*" { 
+                        "*log*" {
                             $containerSpecificNames += @('application.log', 'system.log', 'audit.log', 'error.log')
                         }
-                        "*config*" { 
+                        "*config*" {
                             $containerSpecificNames += @('configuration.xml', 'settings.ini', 'config.properties')
                         }
-                        "*data*" { 
+                        "*data*" {
                             $containerSpecificNames += @('database.db', 'data.sqlite', 'export.xlsx')
                         }
                     }
-                    
+
                     # Combine common names with container-specific names
                     $allBlobNames = $commonBlobNames + $containerSpecificNames | Select-Object -Unique
-                    
+
                     $blobsToTry = @()
                     foreach ($blobName in $allBlobNames) {
                         $blobsToTry += @{
@@ -4026,55 +4015,55 @@ function Get-StorageAccountFiles {
                             BlobType = "Unknown"
                         }
                     }
-                    
+
                     Write-Output "    Trying $($blobsToTry.Count) common file names for blind download"
                     Write-Output "    This may take 15-30 minutes - progress will be shown below..."
                 } else {
                     Write-Output "    Processing container: $($container.name) ($($container.Blobs.Count) blobs)"
                     $blobsToTry = $container.Blobs
                 }
-                
+
                 # Initialize progress tracking
                 $totalFiles = $blobsToTry.Count
                 $currentFileIndex = 0
-                
+
                 foreach ($blob in $blobsToTry) {
                     try {
                         $downloadSummary.TotalFilesProcessed++
                         $currentFileIndex++
-                        
+
                         if ($isBlindDownload) {
                             $downloadSummary.BlindDownloadAttempts++
                             # Show progress for blind downloads
                             $progressPercent = [math]::Round(($currentFileIndex / $totalFiles) * 100, 1)
                             Write-Output "      [$currentFileIndex/$totalFiles] ($progressPercent%) Trying: $($blob.Name)"
                         }
-                        
+
                         # Create safe filename
                         $safeFileName = $blob.Name -replace '[\\/:*?"<>|]', '_'
                         $localFilePath = Join-Path -Path $downloadPath -ChildPath $safeFileName
-                        
+
                         # Ensure subdirectories exist for nested blob paths
                         $parentDir = Split-Path $localFilePath -Parent
                         if ($parentDir -and -not (Test-Path $parentDir)) {
                             New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
                         }
-                        
+
                         $downloadSuccess = $false
                         $permissionError = $false
                         $authMethodUsed = "none"
-                        
+
                         # Enhanced authentication method selection with better error handling
                         Write-Verbose "      Starting download for $($blob.Name) - trying multiple auth methods..."
                         $authMethodDetails = @()
-                        
+
                         # Method 1: Try using Az.Storage module with established storage context (BEST METHOD)
                         if (-not $downloadSuccess) {
                             try {
                                 Write-Verbose "      AUTH METHOD 1: Attempting Az.Storage module with storage context..."
                                 if (Get-Module -ListAvailable Az.Storage -ErrorAction SilentlyContinue) {
                                     Import-Module Az.Storage -ErrorAction SilentlyContinue
-                                    
+
                                     # Use the passed storage context if available, otherwise try to create one
                                     $contextToUse = $StorageContext
                                     if (-not $contextToUse -and $StorageAccountKey) {
@@ -4097,7 +4086,7 @@ function Get-StorageAccountFiles {
                                         Write-Verbose "      Using provided storage context for download"
                                         $authMethodDetails += "ProvidedContext"
                                     }
-                                    
+
                                     if ($contextToUse) {
                                         Write-Verbose "      Attempting download with storage context..."
                                         Get-AzStorageBlobContent -Blob $blob.Name -Container $container.name -Destination $localFilePath -Context $contextToUse -Force -ErrorAction Stop
@@ -4121,14 +4110,14 @@ function Get-StorageAccountFiles {
                                 $authMethodDetails += "Az.Storage-Exception: $($errorMsg -replace '\n|\r', ' ')"
                             }
                         }
-                        
+
                         # Method 2: Try using storage account key with direct API call
                         if ($StorageAccountKey -and -not $downloadSuccess) {
                             try {
                                 Write-Verbose "      AUTH METHOD 2: Attempting storage account key with direct API call..."
                                 $blobUri = "https://$StorageAccountName.blob.core.windows.net/$($container.name)/$($blob.Name)"
                                 $headers = Get-StorageBlobAuthHeader -StorageAccountName $StorageAccountName -StorageAccountKey $StorageAccountKey -HttpMethod "GET" -ResourcePath "/$($container.name)/$($blob.Name)"
-                                
+
                                 if ($headers) {
                                     Write-Verbose "      Storage auth headers created, attempting download..."
                                     Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
@@ -4151,7 +4140,7 @@ function Get-StorageAccountFiles {
                             Write-Verbose "      AUTH METHOD 2: Skipping storage key API - no storage key available"
                             $authMethodDetails += "StorageKey-NotAvailable"
                         }
-                        
+
                         # Method 3: Try using Azure CLI if available
                         if (-not $downloadSuccess) {
                             try {
@@ -4160,34 +4149,34 @@ function Get-StorageAccountFiles {
                                 if ($azAccount) {
                                     Write-Verbose "      Azure CLI is logged in (Account: $($azAccount.user.name)), attempting blob download..."
                                     Write-Verbose "      CLI Command: az storage blob download --account-name $StorageAccountName --container-name $($container.name) --name $($blob.Name) --file `"$localFilePath`" --auth-mode login"
-                                    
+
                                     # Create temp files to capture both stdout and stderr
                                     $tempErrorFile = [System.IO.Path]::GetTempFileName()
                                     $tempOutputFile = [System.IO.Path]::GetTempFileName()
-                                    
+
                                     # Try with login first, then with key if available
                                     $cliArgs = @("storage","blob","download","--account-name",$StorageAccountName,"--container-name",$container.name,"--name",$blob.Name,"--file",$localFilePath)
-                                    
+
                                     # First attempt: OAuth/login authentication
                                     $cliArgs += @("--auth-mode","login")
                                     $process = Start-Process -FilePath "az" -ArgumentList $cliArgs -RedirectStandardError $tempErrorFile -RedirectStandardOutput $tempOutputFile -NoNewWindow -Wait -PassThru
-                                    
+
                                     $cliError = if (Test-Path $tempErrorFile) { Get-Content $tempErrorFile -Raw -ErrorAction SilentlyContinue } else { "" }
                                     $cliOutput = if (Test-Path $tempOutputFile) { Get-Content $tempOutputFile -Raw -ErrorAction SilentlyContinue } else { "" }
-                                    
+
                                     # Clean up temp files
                                     Remove-Item $tempErrorFile -ErrorAction SilentlyContinue
                                     Remove-Item $tempOutputFile -ErrorAction SilentlyContinue
-                                    
+
                                     Write-Verbose "      CLI Exit Code: $($process.ExitCode)"
                                     if ($cliOutput) { Write-Verbose "      CLI Output: $($cliOutput -replace '\n|\r', ' ')" }
                                     if ($cliError) { Write-Verbose "      CLI Error: $($cliError -replace '\n|\r', ' ')" }
-                                    
+
                                     # Check if file was actually downloaded
                                     $fileExists = Test-Path $localFilePath
                                     $fileSize = if ($fileExists) { (Get-Item $localFilePath -ErrorAction SilentlyContinue).Length } else { 0 }
                                     Write-Verbose "      File exists after CLI: $fileExists, Size: $fileSize bytes"
-                                    
+
                                     if ($process.ExitCode -eq 0 -and $fileExists -and $fileSize -gt 0) {
                                         $downloadSuccess = $true
                                         $authMethodUsed = "AzureCLI-Login"
@@ -4197,40 +4186,40 @@ function Get-StorageAccountFiles {
                                         if ($cliError) { $failureReason += ", Error=$($cliError -replace '\n|\r', ' ')" }
                                         if (-not $fileExists) { $failureReason += ", FileNotCreated" }
                                         elseif ($fileSize -eq 0) { $failureReason += ", EmptyFile" }
-                                        
+
                                         Write-Verbose "      Azure CLI OAuth download failed: $failureReason"
-                                        
+
                                         # If OAuth failed due to permissions and we have a storage account key, try with key authentication
                                         if ($StorageAccountKey -and $cliError -match "(required permissions|Storage Blob Data|permission)") {
                                             Write-Verbose "      Retrying Azure CLI download with storage account key..."
-                                            
+
                                             # Clear previous temp files and create new ones for key attempt
                                             Remove-Item $tempErrorFile -ErrorAction SilentlyContinue
                                             Remove-Item $tempOutputFile -ErrorAction SilentlyContinue
                                             $tempErrorFile = [System.IO.Path]::GetTempFileName()
                                             $tempOutputFile = [System.IO.Path]::GetTempFileName()
-                                            
+
                                             # Remove the file if it was partially created
                                             if (Test-Path $localFilePath) { Remove-Item $localFilePath -Force -ErrorAction SilentlyContinue }
-                                            
+
                                             # Build command with key authentication
                                             $keyCliArgs = @("storage","blob","download","--account-name",$StorageAccountName,"--container-name",$container.name,"--name",$blob.Name,"--file",$localFilePath,"--account-key",$StorageAccountKey)
                                             Write-Verbose "      CLI Key Command: az storage blob download --account-name $StorageAccountName --container-name $($container.name) --name $($blob.Name) --file `"$localFilePath`" --account-key [KEY_REDACTED]"
-                                            
+
                                             $keyProcess = Start-Process -FilePath "az" -ArgumentList $keyCliArgs -RedirectStandardError $tempErrorFile -RedirectStandardOutput $tempOutputFile -NoNewWindow -Wait -PassThru
-                                            
+
                                             $keyCliError = if (Test-Path $tempErrorFile) { Get-Content $tempErrorFile -Raw -ErrorAction SilentlyContinue } else { "" }
                                             $keyCliOutput = if (Test-Path $tempOutputFile) { Get-Content $tempOutputFile -Raw -ErrorAction SilentlyContinue } else { "" }
-                                            
+
                                             Write-Verbose "      CLI Key Exit Code: $($keyProcess.ExitCode)"
                                             if ($keyCliOutput) { Write-Verbose "      CLI Key Output: $($keyCliOutput -replace '\n|\r', ' ')" }
                                             if ($keyCliError) { Write-Verbose "      CLI Key Error: $($keyCliError -replace '\n|\r', ' ')" }
-                                            
+
                                             # Check if key-based download succeeded
                                             $keyFileExists = Test-Path $localFilePath
                                             $keyFileSize = if ($keyFileExists) { (Get-Item $localFilePath -ErrorAction SilentlyContinue).Length } else { 0 }
                                             Write-Verbose "      File exists after CLI key attempt: $keyFileExists, Size: $keyFileSize bytes"
-                                            
+
                                             if ($keyProcess.ExitCode -eq 0 -and $keyFileExists -and $keyFileSize -gt 0) {
                                                 $downloadSuccess = $true
                                                 $authMethodUsed = "AzureCLI-Key"
@@ -4244,7 +4233,7 @@ function Get-StorageAccountFiles {
                                         } else {
                                             $authMethodDetails += "AzureCLI-Failed: $failureReason"
                                         }
-                                        
+
                                         if ($cliError -match "(403|Forbidden|Unauthorized|401|BlobNotFound|ContainerNotFound|required permissions|Storage Blob Data|Storage Queue Data|Storage Table Data|auth-mode.*key)") {
                                             $permissionError = $true
                                         }
@@ -4262,7 +4251,7 @@ function Get-StorageAccountFiles {
                                 $authMethodDetails += "AzureCLI-Exception: $($errorMsg -replace '\n|\r', ' ')"
                             }
                         }
-                        
+
                         # Method 4: Try direct HTTP request with storage-specific token
                         if (-not $downloadSuccess -and $Script:StorageToken) {
                             try {
@@ -4272,7 +4261,7 @@ function Get-StorageAccountFiles {
                                     'Authorization' = "Bearer $Script:StorageToken"
                                     'x-ms-version' = '2020-10-02'
                                 }
-                                
+
                                 Write-Verbose "      Making storage token request to: $blobUri"
                                 Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
                                 $downloadSuccess = $true
@@ -4298,7 +4287,7 @@ function Get-StorageAccountFiles {
                                         'Authorization' = "Bearer $($storageTokenResult.StorageToken)"
                                         'x-ms-version' = '2020-10-02'
                                     }
-                                    
+
                                     Write-Verbose "      Making auto-retrieved storage token request to: $blobUri"
                                     Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
                                     $downloadSuccess = $true
@@ -4314,7 +4303,7 @@ function Get-StorageAccountFiles {
                                 $authMethodDetails += "StorageToken-AutoRetrieval-Exception: $($errorMsg -replace '\n|\r', ' ')"
                             }
                         }
-                        
+
                         # Method 5: Fallback to ARM bearer token (less likely to work for storage)
                         if (-not $downloadSuccess -and $script:accessToken) {
                             try {
@@ -4324,7 +4313,7 @@ function Get-StorageAccountFiles {
                                     'Authorization' = "Bearer $script:accessToken"
                                     'x-ms-version' = '2020-10-02'
                                 }
-                                
+
                                 Write-Verbose "      Making ARM bearer token request to: $blobUri"
                                 Invoke-WebRequest -Uri $blobUri -Headers $headers -OutFile $localFilePath -ErrorAction Stop | Out-Null
                                 $downloadSuccess = $true
@@ -4342,16 +4331,16 @@ function Get-StorageAccountFiles {
                             Write-Verbose "      AUTH METHOD 5: Skipping ARM bearer token - no access token available"
                             $authMethodDetails += "ARMBearerToken-NotAvailable"
                         }
-                        
+
                         # If all methods failed, add comprehensive failure details and guidance
                         if (-not $downloadSuccess) {
                             Write-Verbose "      All authentication methods failed for $($blob.Name). Attempted methods: $($authMethodDetails -join ' | ')"
                             Write-Host "        DETAILED AUTH FAILURE for $($blob.Name): $($authMethodDetails -join ' | ')" -ForegroundColor Yellow
                             $downloadSummary.Errors += "Detailed auth failure for $($blob.Name): $($authMethodDetails -join ' | ')"
-                            
+
                             # Show resource-specific token guidance if this looks like a permission/token issue
-                            $needsStorageToken = $authMethodDetails | Where-Object { 
-                                $_ -match "(permission|forbidden|unauthorized|StorageToken|required permissions)" 
+                            $needsStorageToken = $authMethodDetails | Where-Object {
+                                $_ -match "(permission|forbidden|unauthorized|StorageToken|required permissions)"
                             }
                             if ($needsStorageToken -and -not $Script:StorageToken) {
                                 Write-Host "        HINT: This may require a storage-specific token. Run:" -ForegroundColor Cyan
@@ -4359,7 +4348,7 @@ function Get-StorageAccountFiles {
                                 Write-Host "              Then use the token with direct REST API calls" -ForegroundColor Gray
                             }
                         }
-                        
+
                         if ($downloadSuccess) {
                             # Validate that file was actually downloaded and has content
                             if (Test-Path $localFilePath) {
@@ -4367,12 +4356,12 @@ function Get-StorageAccountFiles {
                                 if ($fileInfo.Length -eq 0 -and -not $isBlindDownload) {
                                     Write-Debug "      Downloaded file $($blob.Name) is empty - this may be normal"
                                 }
-                                
+
                                 $containerSuccess++
                                 $downloadSummary.SuccessfulDownloads++
-                                
+
                                 $fileSizeText = if ($fileInfo.Length -gt 0) { " ($($fileInfo.Length) bytes)" } else { " (empty file)" }
-                                
+
                                 if ($isBlindDownload) {
                                     $downloadSummary.BlindDownloadSuccesses++
                                     Write-Host "        SUCCESS: $($blob.Name) downloaded successfully (via $authMethodUsed)$fileSizeText" -ForegroundColor Green
@@ -4387,7 +4376,7 @@ function Get-StorageAccountFiles {
                                 $downloadSummary.FailedDownloads++
                                 Write-Host "        FAILED: $($blob.Name) - download method reported success but file not created" -ForegroundColor Red
                             }
-                            
+
                             # Add metadata file with blob information
                             $metadataFile = "$localFilePath.metadata.txt"
                             $blobSize = if ($blob.Size -and $blob.Size -ne 0) { "$($blob.Size) bytes" } else { "Unknown" }
@@ -4396,7 +4385,7 @@ function Get-StorageAccountFiles {
                             $eTag = if ($blob.ETag -and $blob.ETag -ne "Unknown") { $blob.ETag } else { "Unknown" }
                             $blobType = if ($blob.BlobType -and $blob.BlobType -ne "Unknown") { $blob.BlobType } else { "Unknown" }
                             $downloadMethod = if ($isBlindDownload) { "Blind Download (no enumeration permissions)" } else { "Normal Download" }
-                            
+
                             $metadataContent = @"
 Blob Name: $($blob.Name)
 Container: $($container.name)
@@ -4418,7 +4407,7 @@ Downloaded: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
                                 $errorDetail += " (permission denied)"
                             }
                             $downloadSummary.Errors += $errorDetail
-                            
+
                             # For blind downloads, only show permission errors, not file-not-found errors
                             if ($isBlindDownload) {
                                 if ($permissionError) {
@@ -4431,12 +4420,12 @@ Downloaded: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
                                 Write-Debug "        All authentication methods failed for $($blob.Name). Available methods were tried in order: Az.Storage-Context, StorageKey-API, AzureCLI, BearerToken"
                             }
                         }
-                        
+
                     } catch {
                         $containerFailed++
                         $downloadSummary.FailedDownloads++
                         $downloadSummary.Errors += "Error processing blob $($blob.Name): $($_.Exception.Message)"
-                        
+
                         # Check if this is a permission error worth reporting
                         $errorMessage = $_.Exception.Message
                         if ($errorMessage -match "(403|Forbidden|Unauthorized|401)" -and $isBlindDownload) {
@@ -4445,13 +4434,13 @@ Downloaded: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
                             Write-Host "        ERROR: $($blob.Name) - $errorMessage" -ForegroundColor Red
                         }
                         # Silent for other blind download errors (expected file-not-found cases)
-                        
+
                         Write-Debug "      Error processing blob $($blob.Name): $($_.Exception.Message)"
                     }
                 }
-                
+
                 $downloadSummary.ProcessedContainers++
-                
+
                 if ($isBlindDownload) {
                     Write-Output "      Container $($container.name) (Blind): $containerSuccess successful, $containerFailed failed attempts"
                     if ($containerSuccess -gt 0) {
@@ -4464,13 +4453,13 @@ Downloaded: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
                 } else {
                     Write-Output "      Container $($container.name): $containerSuccess successful, $containerFailed failed downloads"
                 }
-                
+
             } catch {
                 $downloadSummary.Errors += "Error processing container $($container.name): $($_.Exception.Message)"
                 Write-Warning "    Failed to process container $($container.name): $($_.Exception.Message)"
             }
         }
-        
+
         # Create summary report
         $summaryFile = Join-Path -Path $resultsDir -ChildPath "StorageDownload_$($StorageAccountName)_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
         $summaryContent = @"
@@ -4492,7 +4481,7 @@ Blind Download Statistics:
 Download Folders Created:
 $($downloadSummary.DownloadFolders | ForEach-Object { "  - $_" } | Out-String)
 
-$(if ($downloadSummary.Errors.Count -gt 0) { 
+$(if ($downloadSummary.Errors.Count -gt 0) {
 "Errors Encountered:
 $($downloadSummary.Errors | ForEach-Object { "  - $_" } | Out-String)"
 } else { "No errors encountered during download process." })
@@ -4500,14 +4489,14 @@ $($downloadSummary.Errors | ForEach-Object { "  - $_" } | Out-String)"
 Download completed at: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
 "@
         Set-Content -Path $summaryFile -Value $summaryContent -Encoding UTF8
-        
+
         Write-Output "  Storage Account file download complete. Summary: $($downloadSummary.SuccessfulDownloads)/$($downloadSummary.TotalFilesProcessed) files downloaded"
         if ($downloadSummary.DownloadFolders.Count -gt 0) {
             Write-Output "  Files saved to: $($downloadSummary.DownloadFolders -join ', ')"
         }
-        
+
         return $downloadSummary
-        
+
     } catch {
         Write-Warning "Failed to download files from Storage Account $StorageAccountName : $($_.Exception.Message)"
         return @{
@@ -4521,19 +4510,19 @@ function Get-CosmosDbAccountDetails {
     param(
         [Parameter(Mandatory=$true)]
         [string]$CosmosDbAccountId,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$AccessToken
     )
-    
+
     try {
         $headers = @{
             'Authorization' = "Bearer $AccessToken"
             'Content-Type' = 'application/json'
         }
-        
+
         Write-Verbose "Analyzing Cosmos DB Account: $CosmosDbAccountId"
-        
+
         # Initialize account details
         $accountDetails = [PSCustomObject]@{
             AccountId = $CosmosDbAccountId
@@ -4547,7 +4536,7 @@ function Get-CosmosDbAccountDetails {
             RoleAssignments = @()
             Error = $null
         }
-        
+
         # Get account properties
         try {
             $accountUri = "https://management.azure.com$CosmosDbAccountId" + "?api-version=2023-04-15"
@@ -4558,7 +4547,7 @@ function Get-CosmosDbAccountDetails {
         catch {
             Write-Warning "  Failed to get account properties: $($_.Exception.Message)"
         }
-        
+
         # Get connection strings (requires Cosmos DB Account Reader Role or higher)
         try {
             $connectionStringsUri = "https://management.azure.com$CosmosDbAccountId/listConnectionStrings?api-version=2023-04-15"
@@ -4569,7 +4558,7 @@ function Get-CosmosDbAccountDetails {
         catch {
             Write-Verbose "  No access to connection strings: $($_.Exception.Message)"
         }
-        
+
         # Get account keys (requires Cosmos DB Operator or Contributor role)
         try {
             $keysUri = "https://management.azure.com$CosmosDbAccountId/listKeys?api-version=2023-04-15"
@@ -4585,13 +4574,13 @@ function Get-CosmosDbAccountDetails {
         catch {
             Write-Verbose "  No access to account keys: $($_.Exception.Message)"
         }
-        
+
         # Get SQL databases (for Core SQL API)
         if ($accountDetails.Properties.kind -eq "GlobalDocumentDB") {
             try {
                 $databasesUri = "https://management.azure.com$CosmosDbAccountId/sqlDatabases?api-version=2023-04-15"
                 $databasesResponse = Invoke-RestMethod -Uri $databasesUri -Headers $headers -Method GET
-                
+
                 foreach ($database in $databasesResponse.value) {
                     $dbDetails = [PSCustomObject]@{
                         DatabaseId = $database.id
@@ -4599,12 +4588,12 @@ function Get-CosmosDbAccountDetails {
                         Properties = $database.properties
                         Containers = @()
                     }
-                    
+
                     # Get containers for this database
                     try {
                         $containersUri = "https://management.azure.com$($database.id)/containers?api-version=2023-04-15"
                         $containersResponse = Invoke-RestMethod -Uri $containersUri -Headers $headers -Method GET
-                        
+
                         foreach ($container in $containersResponse.value) {
                             $containerDetails = [PSCustomObject]@{
                                 ContainerId = $container.id
@@ -4614,7 +4603,7 @@ function Get-CosmosDbAccountDetails {
                                 Throughput = $null
                                 DocumentCount = "Unknown (requires direct Cosmos DB access)"
                             }
-                            
+
                             # Try to get throughput settings
                             try {
                                 $throughputUri = "https://management.azure.com$($container.id)/throughputSettings/default?api-version=2023-04-15"
@@ -4624,32 +4613,32 @@ function Get-CosmosDbAccountDetails {
                             catch {
                                 Write-Verbose "    No throughput data for container $($container.name)"
                             }
-                            
+
                             $dbDetails.Containers += $containerDetails
                         }
-                        
+
                         Write-Verbose "  Found $($dbDetails.Containers.Count) containers in database $($database.name)"
                     }
                     catch {
                         Write-Verbose "  Failed to get containers for database $($database.name): $($_.Exception.Message)"
                     }
-                    
+
                     $accountDetails.Databases += $dbDetails
                 }
-                
+
                 Write-Verbose "  Found $($accountDetails.Databases.Count) SQL databases"
             }
             catch {
                 Write-Verbose "  Failed to get SQL databases: $($_.Exception.Message)"
             }
         }
-        
+
         # Get MongoDB databases (for MongoDB API)
         if ($accountDetails.Properties.kind -eq "MongoDB") {
             try {
                 $mongoDatabasesUri = "https://management.azure.com$CosmosDbAccountId/mongodbDatabases?api-version=2023-04-15"
                 $mongoDatabasesResponse = Invoke-RestMethod -Uri $mongoDatabasesUri -Headers $headers -Method GET
-                
+
                 foreach ($database in $mongoDatabasesResponse.value) {
                     $dbDetails = [PSCustomObject]@{
                         DatabaseId = $database.id
@@ -4658,7 +4647,7 @@ function Get-CosmosDbAccountDetails {
                         Properties = $database.properties
                         Collections = @()
                     }
-                    
+
                     # Get collections for this MongoDB database
                     try {
                         $collectionsUri = "https://management.azure.com$($database.id)/collections?api-version=2023-04-15"
@@ -4669,25 +4658,25 @@ function Get-CosmosDbAccountDetails {
                     catch {
                         Write-Verbose "  Failed to get collections for MongoDB database $($database.name): $($_.Exception.Message)"
                     }
-                    
+
                     $accountDetails.Databases += $dbDetails
                 }
-                
+
                 Write-Verbose "  Found $($accountDetails.Databases.Count) MongoDB databases"
             }
             catch {
                 Write-Verbose "  Failed to get MongoDB databases: $($_.Exception.Message)"
             }
         }
-        
+
         # Get role assignments for this Cosmos DB account
         try {
             $roleAssignmentsUri = "https://management.azure.com$CosmosDbAccountId/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01"
             $roleAssignmentsResponse = Invoke-RestMethod -Uri $roleAssignmentsUri -Headers $headers -Method GET
-            
+
             foreach ($assignment in $roleAssignmentsResponse.value) {
                 $roleDetails = Get-RoleDefinitionDetails -RoleDefinitionId $assignment.properties.roleDefinitionId -AccessToken $AccessToken
-                
+
                 $roleAssignment = [PSCustomObject]@{
                     PrincipalId = $assignment.properties.principalId
                     RoleDefinitionId = $assignment.properties.roleDefinitionId
@@ -4696,23 +4685,23 @@ function Get-CosmosDbAccountDetails {
                     Scope = $assignment.properties.scope
                     Permissions = if ($roleDetails) { $roleDetails.Permissions } else { @() }
                 }
-                
+
                 $accountDetails.RoleAssignments += $roleAssignment
             }
-            
+
             Write-Verbose "  Found $($accountDetails.RoleAssignments.Count) role assignments"
         }
         catch {
             Write-Verbose "  Failed to get role assignments: $($_.Exception.Message)"
         }
-        
+
         # Analyze effective permissions for current user
         $userPermissions = @()
-        
+
         # Check common Cosmos DB permissions
         $cosmosPermissions = @(
             "Microsoft.DocumentDB/databaseAccounts/read",
-            "Microsoft.DocumentDB/databaseAccounts/write", 
+            "Microsoft.DocumentDB/databaseAccounts/write",
             "Microsoft.DocumentDB/databaseAccounts/delete",
             "Microsoft.DocumentDB/databaseAccounts/listKeys/action",
             "Microsoft.DocumentDB/databaseAccounts/listConnectionStrings/action",
@@ -4721,17 +4710,17 @@ function Get-CosmosDbAccountDetails {
             "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/read",
             "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/write"
         )
-        
+
         foreach ($permission in $cosmosPermissions) {
             $hasPermission = Test-UserPermission -ResourceId $CosmosDbAccountId -Permission $permission -AccessToken $AccessToken
             if ($hasPermission) {
                 $userPermissions += $permission
             }
         }
-        
+
         $accountDetails.EffectivePermissions = $userPermissions
         Write-Verbose "  Current user has $($userPermissions.Count) effective permissions"
-        
+
         return $accountDetails
     }
     catch {
@@ -4752,14 +4741,14 @@ function Get-AutomationAccountDetails {
     param(
         [Parameter(Mandatory=$true)]
         [string]$AutomationAccountId,
-        
+
         [Parameter(Mandatory=$true)]
         [string]$AutomationAccountName
     )
-    
+
     try {
         Write-Debug "Enumerating automation account details for: $AutomationAccountName"
-        
+
         $automationDetails = @{
             Name = $AutomationAccountName
             Id = $AutomationAccountId
@@ -4772,13 +4761,13 @@ function Get-AutomationAccountDetails {
             Schedules = @()
             Error = $null
         }
-        
+
         # Get runbooks
         try {
             $runbooksResponse = Invoke-ARMRequest -Uri "https://management.azure.com$AutomationAccountId/runbooks?api-version=2020-01-13-preview"
             if ($runbooksResponse -and $runbooksResponse.value) {
                 Write-Debug "Found $($runbooksResponse.value.Count) runbooks in $AutomationAccountName"
-                
+
                 foreach ($runbook in $runbooksResponse.value) {
                     $runbookDetail = @{
                         Name = $runbook.name
@@ -4792,7 +4781,7 @@ function Get-AutomationAccountDetails {
                         ScriptContent = $null
                         Error = $null
                     }
-                    
+
                     # Get runbook content/script
                     try {
                         $contentResponse = Invoke-ARMRequest -Uri "https://management.azure.com$AutomationAccountId/runbooks/$($runbook.name)/content?api-version=2020-01-13-preview"
@@ -4804,20 +4793,20 @@ function Get-AutomationAccountDetails {
                         $runbookDetail.Error = "Could not retrieve script content: $($_.Exception.Message)"
                         Write-Debug "Could not retrieve script for runbook $($runbook.name): $($_.Exception.Message)"
                     }
-                    
+
                     $automationDetails.Runbooks += $runbookDetail
                 }
             }
         } catch {
             Write-Debug "Could not retrieve runbooks for $AutomationAccountName : $($_.Exception.Message)"
         }
-        
+
         # Get credentials
         try {
             $credsResponse = Invoke-ARMRequest -Uri "https://management.azure.com$AutomationAccountId/credentials?api-version=2020-01-13-preview"
             if ($credsResponse -and $credsResponse.value) {
                 Write-Debug "Found $($credsResponse.value.Count) credentials in $AutomationAccountName"
-                
+
                 foreach ($cred in $credsResponse.value) {
                     $automationDetails.Credentials += @{
                         Name = $cred.name
@@ -4832,13 +4821,13 @@ function Get-AutomationAccountDetails {
         } catch {
             Write-Debug "Could not retrieve credentials for $AutomationAccountName : $($_.Exception.Message)"
         }
-        
+
         # Get variables
         try {
             $varsResponse = Invoke-ARMRequest -Uri "https://management.azure.com$AutomationAccountId/variables?api-version=2020-01-13-preview"
             if ($varsResponse -and $varsResponse.value) {
                 Write-Debug "Found $($varsResponse.value.Count) variables in $AutomationAccountName"
-                
+
                 foreach ($var in $varsResponse.value) {
                     $automationDetails.Variables += @{
                         Name = $var.name
@@ -4853,13 +4842,13 @@ function Get-AutomationAccountDetails {
         } catch {
             Write-Debug "Could not retrieve variables for $AutomationAccountName : $($_.Exception.Message)"
         }
-        
+
         # Get modules
         try {
             $modulesResponse = Invoke-ARMRequest -Uri "https://management.azure.com$AutomationAccountId/modules?api-version=2020-01-13-preview"
             if ($modulesResponse -and $modulesResponse.value) {
                 Write-Debug "Found $($modulesResponse.value.Count) modules in $AutomationAccountName"
-                
+
                 foreach ($module in $modulesResponse.value) {
                     $automationDetails.Modules += @{
                         Name = $module.name
@@ -4875,13 +4864,13 @@ function Get-AutomationAccountDetails {
         } catch {
             Write-Debug "Could not retrieve modules for $AutomationAccountName : $($_.Exception.Message)"
         }
-        
+
         # Get certificates
         try {
             $certsResponse = Invoke-ARMRequest -Uri "https://management.azure.com$AutomationAccountId/certificates?api-version=2020-01-13-preview"
             if ($certsResponse -and $certsResponse.value) {
                 Write-Debug "Found $($certsResponse.value.Count) certificates in $AutomationAccountName"
-                
+
                 foreach ($cert in $certsResponse.value) {
                     $automationDetails.Certificates += @{
                         Name = $cert.name
@@ -4897,9 +4886,9 @@ function Get-AutomationAccountDetails {
         } catch {
             Write-Debug "Could not retrieve certificates for $AutomationAccountName : $($_.Exception.Message)"
         }
-        
+
         return $automationDetails
-        
+
     } catch {
         Write-Warning "Failed to get detailed automation account information for $AutomationAccountName : $($_.Exception.Message)"
         return @{
@@ -4925,17 +4914,17 @@ function Get-AppConfigurationDetails {
     param(
         [Parameter(Mandatory = $true)]
         [string]$AppConfigId,
-        
+
         [Parameter(Mandatory = $true)]
         [string]$AppConfigName,
-        
+
         [Parameter(Mandatory = $false)]
         [string]$AccessToken
     )
 
     try {
         Write-Debug "Getting detailed App Configuration information for: $AppConfigName"
-        
+
         $appConfigDetails = @{
             Name = $AppConfigName
             Id = $AppConfigId
@@ -4969,7 +4958,7 @@ function Get-AppConfigurationDetails {
             $keysResponse = Invoke-ARMRequest -Uri "https://management.azure.com$AppConfigId/listKeys?api-version=2023-03-01" -Method POST
             if ($keysResponse -and $keysResponse.value) {
                 Write-Debug "Found $($keysResponse.value.Count) access keys for $AppConfigName"
-                
+
                 foreach ($key in $keysResponse.value) {
                     $appConfigDetails.Keys += @{
                         Name = $key.name
@@ -4989,13 +4978,13 @@ function Get-AppConfigurationDetails {
         try {
             if ($appConfigInfo -and $appConfigInfo.properties.endpoint) {
                 Write-Debug "Attempting to retrieve configuration key-values for $AppConfigName"
-                
+
                 # Try to get key-values using REST API (requires appropriate authentication)
                 $endpoint = $appConfigInfo.properties.endpoint.TrimEnd('/')
-                
+
                 # Note: This would require App Configuration data plane authentication
                 # For enumeration purposes, we'll document the attempt
-                $appConfigDetails.KeyValues = @(@{ 
+                $appConfigDetails.KeyValues = @(@{
                     Note = "Key-value enumeration requires App Configuration data plane access"
                     Endpoint = $endpoint
                     ApiVersion = "1.0"
@@ -5011,7 +5000,7 @@ function Get-AppConfigurationDetails {
         try {
             if ($appConfigInfo -and $appConfigInfo.properties.endpoint) {
                 Write-Debug "Checking for feature flags in $AppConfigName"
-                $appConfigDetails.Features = @(@{ 
+                $appConfigDetails.Features = @(@{
                     Note = "Feature flag enumeration requires App Configuration data plane access"
                     Endpoint = $appConfigInfo.properties.endpoint
                 })
@@ -5026,7 +5015,7 @@ function Get-AppConfigurationDetails {
             $privateEndpointsResponse = Invoke-ARMRequest -Uri "https://management.azure.com$AppConfigId/privateEndpointConnections?api-version=2023-03-01"
             if ($privateEndpointsResponse -and $privateEndpointsResponse.value) {
                 Write-Debug "Found $($privateEndpointsResponse.value.Count) private endpoints for $AppConfigName"
-                
+
                 foreach ($pe in $privateEndpointsResponse.value) {
                     $appConfigDetails.PrivateEndpoints += @{
                         Name = $pe.name
@@ -5051,7 +5040,7 @@ function Get-AppConfigurationDetails {
             $replicasResponse = Invoke-ARMRequest -Uri "https://management.azure.com$AppConfigId/replicas?api-version=2023-03-01"
             if ($replicasResponse -and $replicasResponse.value) {
                 Write-Debug "Found $($replicasResponse.value.Count) replicas for $AppConfigName"
-                
+
                 foreach ($replica in $replicasResponse.value) {
                     $appConfigDetails.Replicas += @{
                         Name = $replica.name
@@ -5069,7 +5058,7 @@ function Get-AppConfigurationDetails {
         }
 
         return $appConfigDetails
-        
+
     } catch {
         Write-Warning "Failed to get detailed App Configuration information for $AppConfigName : $($_.Exception.Message)"
         return @{
@@ -5093,14 +5082,14 @@ function Get-ApplicationDetails {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ApplicationId,
-        
+
         [Parameter(Mandatory = $false)]
         [string]$AccessTokenGraph
     )
 
     try {
         Write-Debug "Getting comprehensive application details for: $ApplicationId"
-        
+
         $appDetails = @{
             Id = $ApplicationId
             BasicInfo = @{}
@@ -5121,9 +5110,9 @@ function Get-ApplicationDetails {
             "certification", "samlMetadataUrl", "addIns", "appRoles", "oauth2RequirePostResponse",
             "isFallbackPublicClient", "requestSignatureVerification", "serviceManagementReference"
         ) -join ","
-        
+
         $appUrl = "https://graph.microsoft.com/v1.0/applications/$ApplicationId" + "?`$select=$selectFields"
-        
+
         if ($AccessTokenGraph) {
             $headers = @{
                 'Authorization' = "Bearer $AccessTokenGraph"
@@ -5133,7 +5122,7 @@ function Get-ApplicationDetails {
         } else {
             $application = Invoke-GraphRequest -Uri $appUrl
         }
-        
+
         if ($application) {
             # Basic Information
             $appDetails.BasicInfo = @{
@@ -5223,7 +5212,7 @@ function Get-ApplicationDetails {
                 KeyCredentials = @()
                 PasswordCredentials = @()
             }
-            
+
             if ($application.keyCredentials) {
                 $appDetails.Credentials.KeyCredentials = $application.keyCredentials | ForEach-Object {
                     @{
@@ -5233,7 +5222,7 @@ function Get-ApplicationDetails {
                         DisplayName = $_.displayName
                         StartDateTime = $_.startDateTime
                         EndDateTime = $_.endDateTime
-                        CustomKeyIdentifier = if ($_.customKeyIdentifier) { 
+                        CustomKeyIdentifier = if ($_.customKeyIdentifier) {
                             try {
                                 # Handle hex string conversion to Base64
                                 if ($_.customKeyIdentifier -is [string] -and $_.customKeyIdentifier.Length % 2 -eq 0) {
@@ -5258,7 +5247,7 @@ function Get-ApplicationDetails {
                     }
                 }
             }
-            
+
             if ($application.passwordCredentials) {
                 $appDetails.Credentials.PasswordCredentials = $application.passwordCredentials | ForEach-Object {
                     @{
@@ -5290,13 +5279,13 @@ function Get-ApplicationDetails {
         # Get Application Owners
         try {
             $ownersUrl = "https://graph.microsoft.com/v1.0/applications/$ApplicationId/owners"
-            
+
             if ($AccessTokenGraph) {
                 $owners = Invoke-RestMethod -Uri $ownersUrl -Headers $headers -Method GET
             } else {
                 $owners = Invoke-GraphRequest -Uri $ownersUrl
             }
-            
+
             if ($owners -and $owners.value) {
                 $appDetails.Owners = $owners.value | ForEach-Object {
                     @{
@@ -5315,13 +5304,13 @@ function Get-ApplicationDetails {
         # Get associated Service Principal (if exists)
         try {
             $spUrl = "https://graph.microsoft.com/v1.0/servicePrincipals" + "?`$filter=appId eq '$($application.appId)'"
-            
+
             if ($AccessTokenGraph) {
                 $servicePrincipal = Invoke-RestMethod -Uri $spUrl -Headers $headers -Method GET
             } else {
                 $servicePrincipal = Invoke-GraphRequest -Uri $spUrl
             }
-            
+
             if ($servicePrincipal -and $servicePrincipal.value -and $servicePrincipal.value.Count -gt 0) {
                 $sp = $servicePrincipal.value[0]
                 $appDetails.ServicePrincipal = @{
@@ -5341,17 +5330,17 @@ function Get-ApplicationDetails {
                     Homepage = $sp.homepage
                     PublisherName = $sp.publisherName
                 }
-                
+
                 # Get Service Principal owners
                 try {
                     $spOwnersUrl = "https://graph.microsoft.com/v1.0/servicePrincipals/$($sp.id)/owners"
-                    
+
                     if ($AccessTokenGraph) {
                         $spOwners = Invoke-RestMethod -Uri $spOwnersUrl -Headers $headers -Method GET
                     } else {
                         $spOwners = Invoke-GraphRequest -Uri $spOwnersUrl
                     }
-                    
+
                     if ($spOwners -and $spOwners.value) {
                         $appDetails.ServicePrincipal.Owners = $spOwners.value | ForEach-Object {
                             @{
@@ -5365,7 +5354,7 @@ function Get-ApplicationDetails {
                 } catch {
                     Write-Debug "Could not retrieve service principal owners: $($_.Exception.Message)"
                 }
-                
+
             } else {
                 $appDetails.ServicePrincipal = @{ Note = "No associated service principal found" }
             }
@@ -5375,7 +5364,7 @@ function Get-ApplicationDetails {
         }
 
         return $appDetails
-        
+
     } catch {
         Write-Warning "Failed to get detailed application information for $ApplicationId : $($_.Exception.Message)"
         return @{
@@ -5394,24 +5383,24 @@ function Get-NetworkSecurityGroupDetails {
     param(
         [Parameter(Mandatory = $true)]
         [string]$NsgId,
-        
+
         [Parameter(Mandatory = $true)]
         [string]$NsgName
     )
-    
+
     try {
         Write-Debug "Getting detailed NSG information for: $NsgName"
-        
+
         # Get NSG details
         $nsgInfo = Invoke-ARMRequest -Uri "https://management.azure.com$NsgId" + "?api-version=2022-07-01"
-        
+
         if (-not $nsgInfo) {
             return @{
                 Name = $NsgName
                 Error = "Failed to retrieve NSG details"
             }
         }
-        
+
         $nsgDetails = @{
             Name = $nsgInfo.name
             Location = $nsgInfo.location
@@ -5425,7 +5414,7 @@ function Get-NetworkSecurityGroupDetails {
             FlowLogsEnabled = $false
             Error = $null
         }
-        
+
         # Parse security rules
         if ($nsgInfo.properties.securityRules) {
             $nsgDetails.SecurityRules = $nsgInfo.properties.securityRules | ForEach-Object {
@@ -5449,7 +5438,7 @@ function Get-NetworkSecurityGroupDetails {
                 }
             }
         }
-        
+
         # Parse default security rules
         if ($nsgInfo.properties.defaultSecurityRules) {
             $nsgDetails.DefaultSecurityRules = $nsgInfo.properties.defaultSecurityRules | ForEach-Object {
@@ -5467,7 +5456,7 @@ function Get-NetworkSecurityGroupDetails {
                 }
             }
         }
-        
+
         # Get associated network interfaces
         if ($nsgInfo.properties.networkInterfaces) {
             $nsgDetails.NetworkInterfaces = $nsgInfo.properties.networkInterfaces | ForEach-Object {
@@ -5477,7 +5466,7 @@ function Get-NetworkSecurityGroupDetails {
                 }
             }
         }
-        
+
         # Get associated subnets
         if ($nsgInfo.properties.subnets) {
             $nsgDetails.Subnets = $nsgInfo.properties.subnets | ForEach-Object {
@@ -5488,22 +5477,22 @@ function Get-NetworkSecurityGroupDetails {
                 }
             }
         }
-        
+
         # Analyze security posture
-        $openToInternet = $nsgDetails.SecurityRules | Where-Object { 
-            ($_.SourceAddressPrefix -eq "*" -or $_.SourceAddressPrefix -eq "0.0.0.0/0" -or $_.SourceAddressPrefix -eq "Internet") -and 
-            $_.Access -eq "Allow" -and 
+        $openToInternet = $nsgDetails.SecurityRules | Where-Object {
+            ($_.SourceAddressPrefix -eq "*" -or $_.SourceAddressPrefix -eq "0.0.0.0/0" -or $_.SourceAddressPrefix -eq "Internet") -and
+            $_.Access -eq "Allow" -and
             $_.Direction -eq "Inbound"
         }
-        
+
         $commonDangerousPorts = $nsgDetails.SecurityRules | Where-Object {
-            $_.Access -eq "Allow" -and 
+            $_.Access -eq "Allow" -and
             $_.Direction -eq "Inbound" -and
             ($_.SourceAddressPrefix -eq "*" -or $_.SourceAddressPrefix -eq "0.0.0.0/0" -or $_.SourceAddressPrefix -eq "Internet") -and
             ($_.DestinationPortRange -in @("22", "3389", "1433", "3306", "5432", "6379") -or
              ($_.DestinationPortRanges -and ($_.DestinationPortRanges | Where-Object { $_ -in @("22", "3389", "1433", "3306", "5432", "6379") })))
         }
-        
+
         $nsgDetails.SecurityAnalysis = @{
             TotalCustomRules = $nsgDetails.SecurityRules.Count
             InboundAllowRules = ($nsgDetails.SecurityRules | Where-Object { $_.Direction -eq "Inbound" -and $_.Access -eq "Allow" }).Count
@@ -5511,26 +5500,26 @@ function Get-NetworkSecurityGroupDetails {
             RulesOpenToInternet = $openToInternet.Count
             DangerousPortsExposed = $commonDangerousPorts.Count
             HasWildcardSourceRules = ($nsgDetails.SecurityRules | Where-Object { $_.SourceAddressPrefix -eq "*" }).Count -gt 0
-            HasAnyAnyRules = ($nsgDetails.SecurityRules | Where-Object { 
-                $_.SourceAddressPrefix -eq "*" -and 
-                $_.DestinationAddressPrefix -eq "*" -and 
-                $_.Access -eq "Allow" 
+            HasAnyAnyRules = ($nsgDetails.SecurityRules | Where-Object {
+                $_.SourceAddressPrefix -eq "*" -and
+                $_.DestinationAddressPrefix -eq "*" -and
+                $_.Access -eq "Allow"
             }).Count -gt 0
         }
-        
+
         # Try to get flow logs information
         try {
             $flowLogsUri = "https://management.azure.com/subscriptions/$((($nsgInfo.id -split '/')[2]))/providers/Microsoft.Network/networkWatchers"
             $networkWatchers = Invoke-ARMRequest -Uri "$flowLogsUri" + "?api-version=2022-07-01" -SuppressWarnings $true
-            
+
             if ($networkWatchers -and $networkWatchers.value) {
                 foreach ($watcher in $networkWatchers.value) {
                     $flowLogsUri = "https://management.azure.com$($watcher.id)/flowLogs" + "?api-version=2022-07-01"
                     $flowLogs = Invoke-ARMRequest -Uri $flowLogsUri -SuppressWarnings $true
-                    
+
                     if ($flowLogs -and $flowLogs.value) {
-                        $nsgFlowLog = $flowLogs.value | Where-Object { 
-                            $_.properties.targetResourceId -eq $nsgInfo.id 
+                        $nsgFlowLog = $flowLogs.value | Where-Object {
+                            $_.properties.targetResourceId -eq $nsgInfo.id
                         }
                         if ($nsgFlowLog) {
                             $nsgDetails.FlowLogsEnabled = $true
@@ -5548,9 +5537,9 @@ function Get-NetworkSecurityGroupDetails {
         } catch {
             Write-Debug "Could not retrieve flow log information for NSG $NsgName : $($_.Exception.Message)"
         }
-        
+
         return $nsgDetails
-        
+
     } catch {
         Write-Warning "Failed to get NSG details for $NsgName : $($_.Exception.Message)"
         return @{
@@ -5569,24 +5558,24 @@ function Get-VirtualMachineDetails {
     param(
         [Parameter(Mandatory = $true)]
         [string]$VmId,
-        
+
         [Parameter(Mandatory = $true)]
         [string]$VmName
     )
-    
+
     try {
         Write-Debug "Getting detailed VM information for: $VmName"
-        
+
         # Get VM details
         $vmInfo = Invoke-ARMRequest -Uri "https://management.azure.com$VmId" + "?api-version=2022-08-01"
-        
+
         if (-not $vmInfo) {
             return @{
                 Name = $VmName
                 Error = "Failed to retrieve VM details"
             }
         }
-        
+
         $vmDetails = @{
             Name = $vmInfo.name
             Location = $vmInfo.location
@@ -5610,7 +5599,7 @@ function Get-VirtualMachineDetails {
             SecurityProfile = @{}
             Error = $null
         }
-        
+
         # Get OS Disk information
         if ($vmInfo.properties.storageProfile.osDisk) {
             $osDisk = $vmInfo.properties.storageProfile.osDisk
@@ -5624,7 +5613,7 @@ function Get-VirtualMachineDetails {
                 EncryptionEnabled = if ($osDisk.encryptionSettings) { $true } else { $false }
             }
         }
-        
+
         # Get Data Disks information
         if ($vmInfo.properties.storageProfile.dataDisks) {
             $vmDetails.DataDisks = $vmInfo.properties.storageProfile.dataDisks | ForEach-Object {
@@ -5639,7 +5628,7 @@ function Get-VirtualMachineDetails {
                 }
             }
         }
-        
+
         # Get Network Interfaces
         if ($vmInfo.properties.networkProfile.networkInterfaces) {
             foreach ($nic in $vmInfo.properties.networkProfile.networkInterfaces) {
@@ -5652,20 +5641,20 @@ function Get-VirtualMachineDetails {
                             Primary = $nic.properties.primary
                             PrivateIPAddress = $nicInfo.properties.ipConfigurations[0].properties.privateIPAddress
                             PrivateIPAllocationMethod = $nicInfo.properties.ipConfigurations[0].properties.privateIPAllocationMethod
-                            Subnet = if ($nicInfo.properties.ipConfigurations[0].properties.subnet) { 
-                                ($nicInfo.properties.ipConfigurations[0].properties.subnet.id -split '/')[-1] 
+                            Subnet = if ($nicInfo.properties.ipConfigurations[0].properties.subnet) {
+                                ($nicInfo.properties.ipConfigurations[0].properties.subnet.id -split '/')[-1]
                             } else { "None" }
-                            VirtualNetwork = if ($nicInfo.properties.ipConfigurations[0].properties.subnet) { 
-                                ($nicInfo.properties.ipConfigurations[0].properties.subnet.id -split '/')[-3] 
+                            VirtualNetwork = if ($nicInfo.properties.ipConfigurations[0].properties.subnet) {
+                                ($nicInfo.properties.ipConfigurations[0].properties.subnet.id -split '/')[-3]
                             } else { "None" }
-                            NetworkSecurityGroup = if ($nicInfo.properties.networkSecurityGroup) { 
-                                ($nicInfo.properties.networkSecurityGroup.id -split '/')[-1] 
+                            NetworkSecurityGroup = if ($nicInfo.properties.networkSecurityGroup) {
+                                ($nicInfo.properties.networkSecurityGroup.id -split '/')[-1]
                             } else { "None" }
                             PublicIPAddress = "None"
                             EnableIPForwarding = $nicInfo.properties.enableIPForwarding
                             EnableAcceleratedNetworking = $nicInfo.properties.enableAcceleratedNetworking
                         }
-                        
+
                         # Get Public IP if attached
                         if ($nicInfo.properties.ipConfigurations[0].properties.publicIPAddress) {
                             try {
@@ -5678,7 +5667,7 @@ function Get-VirtualMachineDetails {
                                 Write-Debug "Could not retrieve public IP for NIC: $($_.Exception.Message)"
                             }
                         }
-                        
+
                         $vmDetails.NetworkInterfaces += $nicDetail
                     }
                 } catch {
@@ -5686,7 +5675,7 @@ function Get-VirtualMachineDetails {
                 }
             }
         }
-        
+
         # Get VM Extensions
         try {
             $extensionsInfo = Invoke-ARMRequest -Uri "https://management.azure.com$VmId/extensions" + "?api-version=2022-08-01" -SuppressWarnings $true
@@ -5707,7 +5696,7 @@ function Get-VirtualMachineDetails {
         } catch {
             Write-Debug "Could not retrieve extensions for VM $VmName : $($_.Exception.Message)"
         }
-        
+
         # Get VM Power State
         try {
             $instanceView = Invoke-ARMRequest -Uri "https://management.azure.com$VmId/instanceView" + "?api-version=2022-08-01" -SuppressWarnings $true
@@ -5716,7 +5705,7 @@ function Get-VirtualMachineDetails {
                 if ($powerState) {
                     $vmDetails.PowerState = $powerState.displayStatus
                 }
-                
+
                 # Get boot diagnostics status
                 if ($instanceView.bootDiagnostics) {
                     $vmDetails.BootDiagnostics = @{
@@ -5726,7 +5715,7 @@ function Get-VirtualMachineDetails {
                         SerialConsoleLogUri = $instanceView.bootDiagnostics.serialConsoleLogBlobUri
                     }
                 }
-                
+
                 # Get VM Agent status
                 if ($instanceView.vmAgent) {
                     $vmDetails.VmAgent = @{
@@ -5745,7 +5734,7 @@ function Get-VirtualMachineDetails {
         } catch {
             Write-Debug "Could not retrieve instance view for VM $VmName : $($_.Exception.Message)"
         }
-        
+
         # Get Security Profile information
         if ($vmInfo.properties.securityProfile) {
             $secProfile = $vmInfo.properties.securityProfile
@@ -5760,7 +5749,7 @@ function Get-VirtualMachineDetails {
                 EncryptionAtHost = $secProfile.encryptionAtHost
             }
         }
-        
+
         # Analyze VM security posture
         $vmDetails.SecurityAnalysis = @{
             HasPublicIP = ($vmDetails.NetworkInterfaces | Where-Object { $_.PublicIPAddress -ne "None" }).Count -gt 0
@@ -5771,9 +5760,9 @@ function Get-VirtualMachineDetails {
             AcceleratedNetworkingEnabled = ($vmDetails.NetworkInterfaces | Where-Object { $_.EnableAcceleratedNetworking }).Count -gt 0
             IPForwardingEnabled = ($vmDetails.NetworkInterfaces | Where-Object { $_.EnableIPForwarding }).Count -gt 0
         }
-        
+
         return $vmDetails
-        
+
     } catch {
         Write-Warning "Failed to get VM details for $VmName : $($_.Exception.Message)"
         return @{
@@ -5793,10 +5782,10 @@ function Get-AzureADDetails {
         [Parameter(Mandatory = $false)]
         [string]$AccessTokenGraph
     )
-    
+
     try {
         Write-Debug "Getting comprehensive Azure AD details"
-        
+
         $aadDetails = @{
             ConditionalAccessPolicies = @()
             ServicePrincipals = @()
@@ -5808,7 +5797,7 @@ function Get-AzureADDetails {
             SecurityDefaults = @{}
             Error = $null
         }
-        
+
         $headers = if ($AccessTokenGraph) {
             @{
                 'Authorization' = "Bearer $AccessTokenGraph"
@@ -5817,17 +5806,17 @@ function Get-AzureADDetails {
         } else {
             @{}
         }
-        
+
         # Get Conditional Access Policies
         try {
             $caUrl = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies"
-            
+
             if ($AccessTokenGraph) {
                 $caPolicies = Invoke-RestMethod -Uri $caUrl -Headers $headers -Method GET
             } else {
                 $caPolicies = Invoke-GraphRequest -Uri $caUrl
             }
-            
+
             if ($caPolicies -and $caPolicies.value) {
                 $aadDetails.ConditionalAccessPolicies = $caPolicies.value | ForEach-Object {
                     @{
@@ -5878,17 +5867,17 @@ function Get-AzureADDetails {
         } catch {
             Write-Debug "Could not retrieve conditional access policies: $($_.Exception.Message)"
         }
-        
+
         # Get Service Principals
         try {
             $spUrl = "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,appId,displayName,servicePrincipalType,accountEnabled,createdDateTime,tags,publisherName&`$top=999"
-            
+
             if ($AccessTokenGraph) {
                 $servicePrincipals = Invoke-RestMethod -Uri $spUrl -Headers $headers -Method GET
             } else {
                 $servicePrincipals = Invoke-GraphRequest -Uri $spUrl
             }
-            
+
             if ($servicePrincipals -and $servicePrincipals.value) {
                 $aadDetails.ServicePrincipals = $servicePrincipals.value | ForEach-Object {
                     @{
@@ -5903,7 +5892,7 @@ function Get-AzureADDetails {
                         IsManagedIdentity = ($_.tags -contains "ManagedIdentityType")
                     }
                 }
-                
+
                 # Separate managed identities
                 $aadDetails.ManagedIdentities = $aadDetails.ServicePrincipals | Where-Object { $_.IsManagedIdentity }
                 $aadDetails.EnterpriseApplications = $aadDetails.ServicePrincipals | Where-Object { -not $_.IsManagedIdentity -and $_.ServicePrincipalType -eq "Application" }
@@ -5911,17 +5900,17 @@ function Get-AzureADDetails {
         } catch {
             Write-Debug "Could not retrieve service principals: $($_.Exception.Message)"
         }
-        
+
         # Get Named Locations
         try {
             $nlUrl = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations"
-            
+
             if ($AccessTokenGraph) {
                 $namedLocations = Invoke-RestMethod -Uri $nlUrl -Headers $headers -Method GET
             } else {
                 $namedLocations = Invoke-GraphRequest -Uri $nlUrl
             }
-            
+
             if ($namedLocations -and $namedLocations.value) {
                 $aadDetails.NamedLocations = $namedLocations.value | ForEach-Object {
                     @{
@@ -5932,8 +5921,8 @@ function Get-AzureADDetails {
                         IsTrusted = $_.isTrusted
                         Type = $_.'@odata.type'
                         CountriesAndRegions = if ($_.countriesAndRegions) { $_.countriesAndRegions -join ", " } else { "N/A" }
-                        IpRanges = if ($_.ipRanges) { 
-                            ($_.ipRanges | ForEach-Object { $_.cidrAddress }) -join ", " 
+                        IpRanges = if ($_.ipRanges) {
+                            ($_.ipRanges | ForEach-Object { $_.cidrAddress }) -join ", "
                         } else { "N/A" }
                     }
                 }
@@ -5941,17 +5930,17 @@ function Get-AzureADDetails {
         } catch {
             Write-Debug "Could not retrieve named locations: $($_.Exception.Message)"
         }
-        
+
         # Get Directory Settings
         try {
             $dsUrl = "https://graph.microsoft.com/v1.0/directorySettingTemplates"
-            
+
             if ($AccessTokenGraph) {
                 $directorySettings = Invoke-RestMethod -Uri $dsUrl -Headers $headers -Method GET
             } else {
                 $directorySettings = Invoke-GraphRequest -Uri $dsUrl
             }
-            
+
             if ($directorySettings -and $directorySettings.value) {
                 $aadDetails.DirectorySettings = @{
                     AvailableTemplates = $directorySettings.value | ForEach-Object {
@@ -5966,17 +5955,17 @@ function Get-AzureADDetails {
         } catch {
             Write-Debug "Could not retrieve directory settings: $($_.Exception.Message)"
         }
-        
+
         # Get Authentication Methods Policy
         try {
             $amUrl = "https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy"
-            
+
             if ($AccessTokenGraph) {
                 $authMethods = Invoke-RestMethod -Uri $amUrl -Headers $headers -Method GET
             } else {
                 $authMethods = Invoke-GraphRequest -Uri $amUrl
             }
-            
+
             if ($authMethods) {
                 $aadDetails.AuthenticationMethods = @{
                     PolicyVersion = $authMethods.policyVersion
@@ -5998,7 +5987,7 @@ function Get-AzureADDetails {
         } catch {
             Write-Debug "Could not retrieve authentication methods policy: $($_.Exception.Message)"
         }
-        
+
         # Analyze AAD Security Posture
         $aadDetails.SecurityAnalysis = @{
             TotalConditionalAccessPolicies = $aadDetails.ConditionalAccessPolicies.Count
@@ -6008,16 +5997,16 @@ function Get-AzureADDetails {
             EnterpriseApplicationsCount = $aadDetails.EnterpriseApplications.Count
             NamedLocationsCount = $aadDetails.NamedLocations.Count
             TrustedNamedLocationsCount = ($aadDetails.NamedLocations | Where-Object { $_.IsTrusted }).Count
-            HasBlockLegacyAuthPolicies = ($aadDetails.ConditionalAccessPolicies | Where-Object { 
-                $_.Conditions.ClientAppTypes -like "*legacyAuthentication*" -and $_.State -eq "enabled" 
+            HasBlockLegacyAuthPolicies = ($aadDetails.ConditionalAccessPolicies | Where-Object {
+                $_.Conditions.ClientAppTypes -like "*legacyAuthentication*" -and $_.State -eq "enabled"
             }).Count -gt 0
-            RequiresMFAPolicies = ($aadDetails.ConditionalAccessPolicies | Where-Object { 
-                $_.GrantControls.BuiltInControls -like "*mfa*" -and $_.State -eq "enabled" 
+            RequiresMFAPolicies = ($aadDetails.ConditionalAccessPolicies | Where-Object {
+                $_.GrantControls.BuiltInControls -like "*mfa*" -and $_.State -eq "enabled"
             }).Count -gt 0
         }
-        
+
         return $aadDetails
-        
+
     } catch {
         Write-Warning "Failed to get Azure AD details: $($_.Exception.Message)"
         return @{
@@ -6033,17 +6022,17 @@ function Get-TenantInformation {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         Write-Verbose "Retrieving tenant organization details..."
-        
+
         # Get organization details
         $orgUri = "https://graph.microsoft.com/v1.0/organization"
         $orgResponse = Invoke-RestMethod -Uri $orgUri -Headers $Script:GraphHeaders -Method Get -ErrorAction SilentlyContinue
-        
+
         if ($orgResponse -and $orgResponse.value) {
             $org = $orgResponse.value[0]
-            
+
             return @{
                 Id = $org.id
                 DisplayName = $org.displayName
@@ -6078,26 +6067,26 @@ function Get-DirectoryRoles {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         Write-Verbose "Retrieving directory roles and assignments..."
-        
+
         # Get directory roles
         $rolesUri = "https://graph.microsoft.com/v1.0/directoryRoles"
         $rolesResponse = Invoke-RestMethod -Uri $rolesUri -Headers $Script:GraphHeaders -Method Get -ErrorAction SilentlyContinue
-        
+
         $roleAssignments = @()
         $roles = @()
-        
+
         if ($rolesResponse -and $rolesResponse.value) {
             $roles = $rolesResponse.value
-            
+
             # Get role assignments for each role
             foreach ($role in $roles) {
                 try {
                     $membersUri = "https://graph.microsoft.com/v1.0/directoryRoles/$($role.id)/members"
                     $membersResponse = Invoke-RestMethod -Uri $membersUri -Headers $Script:GraphHeaders -Method Get -ErrorAction SilentlyContinue
-                    
+
                     if ($membersResponse -and $membersResponse.value) {
                         foreach ($member in $membersResponse.value) {
                             $roleAssignments += @{
@@ -6116,7 +6105,7 @@ function Get-DirectoryRoles {
                 }
             }
         }
-        
+
         return @{
             Roles = $roles
             RoleAssignments = $roleAssignments
@@ -6134,13 +6123,13 @@ function Get-TenantUsers {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         Write-Verbose "Retrieving all tenant users..."
-        
+
         $users = @()
         $usersUri = "https://graph.microsoft.com/v1.0/users?`$select=id,displayName,userPrincipalName,accountEnabled,userType,createdDateTime,signInActivity,assignedLicenses&`$top=999"
-        
+
         do {
             try {
                 $response = Invoke-RestMethod -Uri $usersUri -Headers $Script:GraphHeaders -Method Get -ErrorAction Stop
@@ -6162,7 +6151,7 @@ function Get-TenantUsers {
                 }
             }
         } while ($usersUri)
-        
+
         # Analyze user data
         $analysis = @{
             TotalUsers = $users.Count
@@ -6174,7 +6163,7 @@ function Get-TenantUsers {
             EnabledUsersCount = ($users | Where-Object { $_.accountEnabled -eq $true }).Count
             GuestUsersCount = ($users | Where-Object { $_.userType -eq "Guest" }).Count
         }
-        
+
         return @{
             Users = $users
             Analysis = $analysis
@@ -6192,13 +6181,13 @@ function Get-TenantGroups {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         Write-Verbose "Retrieving all tenant groups..."
-        
+
         $groups = @()
         $groupsUri = "https://graph.microsoft.com/v1.0/groups?`$select=id,displayName,description,groupTypes,securityEnabled,mailEnabled,createdDateTime&`$top=999"
-        
+
         do {
             try {
                 $response = Invoke-RestMethod -Uri $groupsUri -Headers $Script:GraphHeaders -Method Get -ErrorAction Stop
@@ -6220,7 +6209,7 @@ function Get-TenantGroups {
                 }
             }
         } while ($groupsUri)
-        
+
         # Analyze group data
         $analysis = @{
             TotalGroups = $groups.Count
@@ -6230,7 +6219,7 @@ function Get-TenantGroups {
             SecurityGroupsCount = ($groups | Where-Object { $_.securityEnabled -eq $true }).Count
             DistributionGroupsCount = ($groups | Where-Object { $_.mailEnabled -eq $true -and $_.securityEnabled -eq $false }).Count
         }
-        
+
         return @{
             Groups = $groups
             Analysis = $analysis
@@ -6250,13 +6239,13 @@ function Get-TenantApplications {
     param(
         [array]$OwnedApplications = @()
     )
-    
+
     try {
         Write-Verbose "Retrieving tenant applications and service principals..."
-        
+
         $applications = @()
         $servicePrincipals = @()
-        
+
         # Get applications
         try {
             if ($AccessTokenGraph) {
@@ -6264,7 +6253,7 @@ function Get-TenantApplications {
                     'Authorization' = "Bearer $AccessTokenGraph"
                     'Content-Type' = 'application/json'
                 }
-                
+
                 # Get applications with key properties
                 $appUri = "https://graph.microsoft.com/v1.0/applications?`$select=id,appId,displayName,createdDateTime,publisherDomain,signInAudience,web,spa,requiredResourceAccess,passwordCredentials,keyCredentials&`$top=999"
                 try {
@@ -6279,7 +6268,7 @@ function Get-TenantApplications {
                         throw
                     }
                 }
-                
+
                 if ($response -and $response.value) {
                     foreach ($app in $response.value) {
                         $isOwned = Test-ApplicationOwnership -ApplicationId $app.appId -OwnedApplications $OwnedApplications
@@ -6328,13 +6317,13 @@ function Get-TenantApplications {
         } catch {
             Write-Verbose "Failed to retrieve applications: $($_.Exception.Message)"
         }
-        
+
         # Get service principals
         try {
             if ($AccessTokenGraph) {
                 $spUri = "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,appId,displayName,servicePrincipalType,createdDateTime,publisherName,appDisplayName,passwordCredentials,keyCredentials&`$top=999"
                 $response = Invoke-RestMethod -Uri $spUri -Headers $headers -Method GET
-                
+
                 if ($response -and $response.value) {
                     foreach ($sp in $response.value) {
                         $servicePrincipals += [PSCustomObject]@{
@@ -6373,7 +6362,7 @@ function Get-TenantApplications {
         } catch {
             Write-Verbose "Failed to retrieve service principals: $($_.Exception.Message)"
         }
-        
+
         # Analyze the applications and service principals
         $analysis = @{
             ApplicationsWithSecrets = ($applications | Where-Object { $_.HasSecrets }).Count
@@ -6382,7 +6371,7 @@ function Get-TenantApplications {
             ApplicationServicePrincipals = ($servicePrincipals | Where-Object { $_.ServicePrincipalType -eq "Application" }).Count
             TotalCredentials = ($applications | Measure-Object -Property PasswordCredentials -Sum).Sum + ($applications | Measure-Object -Property KeyCredentials -Sum).Sum
         }
-        
+
         return @{
             Applications = $applications
             ServicePrincipals = $servicePrincipals
@@ -6401,7 +6390,7 @@ function Test-GraphApiPermissions {
     #>
     [CmdletBinding()]
     param()
-    
+
     $permissions = @{
         CanReadUsers = $false
         CanReadGroups = $false
@@ -6413,7 +6402,7 @@ function Test-GraphApiPermissions {
         AvailableEndpoints = @()
         PermissionErrors = @()
     }
-    
+
     # Test endpoints to determine available permissions
     $testEndpoints = @(
         @{ Name = "Users"; Endpoint = "https://graph.microsoft.com/v1.0/users?`$top=1"; Property = "CanReadUsers" }
@@ -6424,7 +6413,7 @@ function Test-GraphApiPermissions {
         @{ Name = "Conditional Access"; Endpoint = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?`$top=1"; Property = "CanReadConditionalAccess" }
         @{ Name = "Audit Logs"; Endpoint = "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1"; Property = "CanReadAuditLogs" }
     )
-    
+
     foreach ($test in $testEndpoints) {
         try {
             $response = Invoke-RestMethod -Uri $test.Endpoint -Headers $Script:GraphHeaders -Method Get -ErrorAction Stop
@@ -6440,27 +6429,27 @@ function Test-GraphApiPermissions {
             }
         }
     }
-    
+
     # Add comprehensive permission guidance
     if ($permissions.PermissionErrors.Count -gt 0) {
         Write-Output "`nGraph API Permission Issues Detected"
         Write-Output "The current Graph token has limited permissions. Here's what's missing:"
-        
+
         $permissionMappings = @{
             "Users" = "User.Read.All or Directory.Read.All"
-            "Groups" = "Group.Read.All or Directory.Read.All" 
+            "Groups" = "Group.Read.All or Directory.Read.All"
             "Applications" = "Application.Read.All or Directory.Read.All"
             "Directory Roles" = "RoleManagement.Read.Directory or Directory.Read.All"
             "Organization" = "Organization.Read.All or Directory.Read.All"
             "Conditional Access" = "Policy.Read.All or Directory.Read.All"
             "Audit Logs" = "AuditLog.Read.All or Directory.Read.All"
         }
-        
+
         foreach ($permerror in $permissions.PermissionErrors) {
             $requiredPermission = $permissionMappings[$permerror.Endpoint]
             Write-Output "  - $($permerror.Endpoint): Missing '$requiredPermission' permission"
         }
-        
+
         Write-Output "`nTo get comprehensive Azure AD enumeration, try these options:"
         Write-Output "  1. Get a token with Directory.Read.All permission (covers all endpoints)"
         Write-Output "  2. Use Azure CLI with proper permissions: az login --allow-no-subscriptions"
@@ -6472,7 +6461,7 @@ function Test-GraphApiPermissions {
         Write-Output "  az ad app permission grant --id <app-id> --api 00000003-0000-0000-c000-000000000000"
         Write-Output "  az ad app permission admin-consent --id <app-id>"
     }
-    
+
     return $permissions
 }
 
@@ -6485,14 +6474,14 @@ function Initialize-AzureCLI {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ServicePrincipalId,
-        
+
         [Parameter(Mandatory = $true)]
         [string]$ServicePrincipalSecret,
-        
+
         [Parameter(Mandatory = $true)]
         [string]$TenantId
     )
-    
+
     try {
         # Check if Azure CLI is installed
         $azCli = Get-Command az -ErrorAction SilentlyContinue
@@ -6503,13 +6492,15 @@ function Initialize-AzureCLI {
                 AuthenticationDetails = $null
             }
         }
-        
+
         Write-Verbose "Authenticating with Azure CLI using service principal..."
-        
+
         # Login with service principal
+        # Note: Invoke-Expression is used here for Azure CLI command execution
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '')]
         $loginCmd = "az login --service-principal --username '$ServicePrincipalId' --password '$ServicePrincipalSecret' --tenant '$TenantId' --allow-no-subscriptions"
         $loginResult = Invoke-Expression $loginCmd 2>&1
-        
+
         if ($LASTEXITCODE -ne 0) {
             return @{
                 Success = $false
@@ -6517,10 +6508,10 @@ function Initialize-AzureCLI {
                 AuthenticationDetails = $null
             }
         }
-        
+
         # Get account details
         $accountInfo = az account show --output json 2>&1 | ConvertFrom-Json -ErrorAction SilentlyContinue
-        
+
         return @{
             Success = $true
             Error = $null
@@ -6531,7 +6522,7 @@ function Initialize-AzureCLI {
                 HasSubscriptions = $null -ne $accountInfo.id
             }
         }
-        
+
     } catch {
         return @{
             Success = $false
@@ -6547,17 +6538,18 @@ function Initialize-AzServicePrincipal {
         Initializes Azure PowerShell authentication using service principal credentials.
     #>
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '', Justification = 'Required for Azure authentication')]
     param(
         [Parameter(Mandatory = $true)]
         [string]$ApplicationId,
-        
+
         [Parameter(Mandatory = $true)]
         [string]$ClientSecret,
-        
+
         [Parameter(Mandatory = $true)]
         [string]$TenantId
     )
-    
+
     try {
         # Check if Az.Accounts module is available
         $azAccountsModule = Get-Module Az.Accounts -ListAvailable -ErrorAction SilentlyContinue
@@ -6568,19 +6560,21 @@ function Initialize-AzServicePrincipal {
                 AuthenticationDetails = $null
             }
         }
-        
+
         # Import Az.Accounts module if not already loaded
         if (-not (Get-Module Az.Accounts)) {
             Write-Verbose "Importing Az.Accounts module..."
             Import-Module Az.Accounts -Force -ErrorAction Stop
         }
-        
+
         Write-Verbose "Authenticating with Azure PowerShell using service principal..."
-        
+
         # Create PSCredential object
+        # Note: ConvertTo-SecureString with -AsPlainText is necessary for authentication
+        # Suppressing PSScriptAnalyzer warning as this is required for service principal authentication
         $secureSecret = ConvertTo-SecureString $ClientSecret -AsPlainText -Force
         $credential = New-Object System.Management.Automation.PSCredential($ApplicationId, $secureSecret)
-        
+
         # Connect to Azure with service principal
         try {
             # First try standard connection
@@ -6607,7 +6601,7 @@ function Initialize-AzServicePrincipal {
                 }
             }
         }
-        
+
         if (-not $connectResult) {
             return @{
                 Success = $false
@@ -6615,7 +6609,7 @@ function Initialize-AzServicePrincipal {
                 AuthenticationDetails = $null
             }
         }
-        
+
         # Get current context to verify authentication
         $context = Get-AzContext -ErrorAction SilentlyContinue
         if (-not $context) {
@@ -6625,10 +6619,10 @@ function Initialize-AzServicePrincipal {
                 AuthenticationDetails = $null
             }
         }
-        
+
         # Check if service principal has any subscription access
         $subscriptions = Get-AzSubscription -ErrorAction SilentlyContinue
-        
+
         return @{
             Success = $true
             Error = $null
@@ -6641,7 +6635,7 @@ function Initialize-AzServicePrincipal {
                 TenantDisplayName = $context.Tenant.Name
             }
         }
-        
+
     } catch {
         return @{
             Success = $false
@@ -6658,7 +6652,7 @@ function Get-AzAccessTokensFromServicePrincipal {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         $result = @{
             Success = $false
@@ -6667,7 +6661,7 @@ function Get-AzAccessTokensFromServicePrincipal {
             KeyVaultToken = $null
             Error = $null
         }
-        
+
         # Get ARM token
         try {
             Write-Verbose "Acquiring ARM access token..."
@@ -6684,7 +6678,7 @@ function Get-AzAccessTokensFromServicePrincipal {
         } catch {
             Write-Warning "Failed to acquire ARM token: $($_.Exception.Message)"
         }
-        
+
         # Get Graph token
         try {
             Write-Verbose "Acquiring Graph access token..."
@@ -6701,7 +6695,7 @@ function Get-AzAccessTokensFromServicePrincipal {
         } catch {
             Write-Warning "Failed to acquire Graph token: $($_.Exception.Message)"
         }
-        
+
         # Get Key Vault token (optional, for enhanced Key Vault access)
         try {
             Write-Verbose "Acquiring Key Vault access token..."
@@ -6718,7 +6712,7 @@ function Get-AzAccessTokensFromServicePrincipal {
         } catch {
             Write-Verbose "Key Vault token acquisition failed (this is optional): $($_.Exception.Message)"
         }
-        
+
         # Check if we got at least one token
         if ($result.ARMToken -or $result.GraphToken) {
             $result.Success = $true
@@ -6727,9 +6721,9 @@ function Get-AzAccessTokensFromServicePrincipal {
             $result.Error = "Failed to acquire any access tokens"
             Write-Warning $result.Error
         }
-        
+
         return $result
-        
+
     } catch {
         return @{
             Success = $false
@@ -6748,7 +6742,7 @@ function Test-AzureCLICapabilities {
     #>
     [CmdletBinding()]
     param()
-    
+
     $capabilities = @{
         CanListUsers = $false
         CanListGroups = $false
@@ -6760,7 +6754,7 @@ function Test-AzureCLICapabilities {
         AvailableCommands = @()
         CommandErrors = @()
     }
-    
+
     # Test various CLI commands
     $testCommands = @(
         @{ Name = "Users"; Command = "az ad user list --top 1"; Property = "CanListUsers" }
@@ -6771,9 +6765,11 @@ function Test-AzureCLICapabilities {
         @{ Name = "Subscriptions"; Command = "az account subscription list --max-items 1"; Property = "CanListSubscriptions" }
         @{ Name = "OwnedObjects"; Command = "az ad signed-in-user list-owned-objects"; Property = "CanListOwnedObjects" }
     )
-    
+
     foreach ($test in $testCommands) {
         try {
+            # Note: Invoke-Expression is used here for Azure CLI command execution
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '')]
             $result = Invoke-Expression "$($test.Command) --output json" 2>&1
             if ($LASTEXITCODE -eq 0) {
                 $capabilities[$test.Property] = $true
@@ -6793,7 +6789,7 @@ function Test-AzureCLICapabilities {
             }
         }
     }
-    
+
     return $capabilities
 }
 
@@ -6804,17 +6800,17 @@ function Get-TenantDetailsViaCLI {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         # Get tenant information
         $tenantResult = az account tenant list --output json 2>&1
         if ($LASTEXITCODE -eq 0) {
             $tenants = $tenantResult | ConvertFrom-Json -ErrorAction SilentlyContinue
-            
+
             # Get current account info
             $accountResult = az account show --output json 2>&1
             $currentAccount = if ($LASTEXITCODE -eq 0) { $accountResult | ConvertFrom-Json -ErrorAction SilentlyContinue } else { $null }
-            
+
             return @{
                 Tenants = $tenants
                 CurrentAccount = $currentAccount
@@ -6835,12 +6831,12 @@ function Get-UsersViaCLI {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         $usersResult = az ad user list --output json 2>&1
         if ($LASTEXITCODE -eq 0) {
             $users = $usersResult | ConvertFrom-Json -ErrorAction SilentlyContinue
-            
+
             if ($users) {
                 # Analyze user data
                 $analysis = @{
@@ -6850,7 +6846,7 @@ function Get-UsersViaCLI {
                     GuestUsers = ($users | Where-Object { $_.userType -eq "Guest" }).Count
                     MemberUsers = ($users | Where-Object { $_.userType -eq "Member" }).Count
                 }
-                
+
                 return @{
                     Users = $users
                     Analysis = $analysis
@@ -6874,12 +6870,12 @@ function Get-GroupsViaCLI {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         $groupsResult = az ad group list --output json 2>&1
         if ($LASTEXITCODE -eq 0) {
             $groups = $groupsResult | ConvertFrom-Json -ErrorAction SilentlyContinue
-            
+
             if ($groups) {
                 # Analyze group data
                 $analysis = @{
@@ -6887,7 +6883,7 @@ function Get-GroupsViaCLI {
                     SecurityGroups = ($groups | Where-Object { $_.securityEnabled -eq $true }).Count
                     DistributionGroups = ($groups | Where-Object { $_.mailEnabled -eq $true -and $_.securityEnabled -eq $false }).Count
                 }
-                
+
                 return @{
                     Groups = $groups
                     Analysis = $analysis
@@ -6913,12 +6909,12 @@ function Get-ApplicationsViaCLI {
     param(
         [array]$OwnedApplications = @()
     )
-    
+
     try {
         $appsResult = az ad app list --output json 2>&1
         if ($LASTEXITCODE -eq 0) {
             $applications = $appsResult | ConvertFrom-Json -ErrorAction SilentlyContinue
-            
+
             if ($applications) {
                 # Enhance applications with ownership information
                 $enhancedApplications = @()
@@ -6928,11 +6924,11 @@ function Get-ApplicationsViaCLI {
                     $enhancedApp = $enhancedApp | Add-Member -NotePropertyName "OwnershipStatus" -NotePropertyValue $(if ($isOwned) { "OWNED - PRIVILEGE ESCALATION OPPORTUNITY!" } else { "Not Owned" }) -PassThru
                     $enhancedApplications += $enhancedApp
                 }
-                
+
                 # Get service principals
                 $spResult = az ad sp list --all --output json 2>&1
                 $servicePrincipals = if ($LASTEXITCODE -eq 0) { $spResult | ConvertFrom-Json -ErrorAction SilentlyContinue } else { @() }
-                
+
                 # Analyze application data including ownership
                 $ownedAppsCount = ($enhancedApplications | Where-Object { $_.IsOwned -eq $true }).Count
                 $analysis = @{
@@ -6942,7 +6938,7 @@ function Get-ApplicationsViaCLI {
                     OwnedApplications = $ownedAppsCount
                     PrivilegeEscalationOpportunities = $ownedAppsCount
                 }
-                
+
                 return @{
                     Applications = $enhancedApplications
                     ServicePrincipals = $servicePrincipals
@@ -6967,12 +6963,12 @@ function Get-RoleAssignmentsViaCLI {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         $roleResult = az role assignment list --all --output json 2>&1
         if ($LASTEXITCODE -eq 0) {
             $roleAssignments = $roleResult | ConvertFrom-Json -ErrorAction SilentlyContinue
-            
+
             if ($roleAssignments) {
                 # Analyze role assignments
                 $analysis = @{
@@ -6980,7 +6976,7 @@ function Get-RoleAssignmentsViaCLI {
                     UniqueRoles = ($roleAssignments | Select-Object -ExpandProperty roleDefinitionName -Unique).Count
                     UniquePrincipals = ($roleAssignments | Select-Object -ExpandProperty principalId -Unique).Count
                 }
-                
+
                 return @{
                     RoleAssignments = $roleAssignments
                     Analysis = $analysis
@@ -7008,16 +7004,16 @@ function Get-OwnedObjectsViaCLI {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         Write-Verbose "Retrieving objects owned by current user via Azure CLI..."
-        
+
         # Get owned objects using Azure CLI
         $ownedResult = az ad signed-in-user list-owned-objects --output json 2>&1
-        
+
         if ($LASTEXITCODE -eq 0) {
             $ownedObjects = $ownedResult | ConvertFrom-Json -ErrorAction SilentlyContinue
-            
+
             if ($ownedObjects) {
                 # Categorize owned objects by type
                 $applications = $ownedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.application' }
@@ -7025,7 +7021,7 @@ function Get-OwnedObjectsViaCLI {
                 $groups = $ownedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.group' }
                 $devices = $ownedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.device' }
                 $others = $ownedObjects | Where-Object { $_.'@odata.type' -notin @('#microsoft.graph.application', '#microsoft.graph.servicePrincipal', '#microsoft.graph.group', '#microsoft.graph.device') }
-                
+
                 # Create analysis summary
                 $analysis = @{
                     TotalOwnedObjects = $ownedObjects.Count
@@ -7036,9 +7032,9 @@ function Get-OwnedObjectsViaCLI {
                     OtherOwnedObjects = $others.Count
                     PrivilegeEscalationOpportunities = $applications.Count # Applications are key for privilege escalation
                 }
-                
+
                 Write-Verbose "Found $($ownedObjects.Count) owned objects: $($applications.Count) apps, $($servicePrincipals.Count) SPs, $($groups.Count) groups"
-                
+
                 return @{
                     OwnedObjects = $ownedObjects
                     Applications = $applications
@@ -7050,7 +7046,7 @@ function Get-OwnedObjectsViaCLI {
                     Error = $null
                 }
             } else {
-                return @{ 
+                return @{
                     OwnedObjects = @()
                     Applications = @()
                     ServicePrincipals = @()
@@ -7081,44 +7077,44 @@ function Get-OwnedObjectsViaGraph {
     param(
         [string]$AccessToken
     )
-    
+
     try {
         Write-Verbose "Retrieving objects owned by current user via Graph API..."
-        
+
         # Set up headers for Graph API call
         $headers = @{
             'Authorization' = "Bearer $AccessToken"
             'Content-Type' = 'application/json'
         }
-        
+
         # Get owned objects using Graph API
         $allOwnedObjects = @()
         $nextLink = "https://graph.microsoft.com/v1.0/me/ownedObjects"
-        
+
         do {
             $response = Invoke-RestMethod -Uri $nextLink -Headers $headers -Method GET
-            
+
             if ($response.value) {
                 $allOwnedObjects += $response.value
             }
-            
+
             $nextLink = $response.'@odata.nextLink'
         } while ($nextLink)
-        
+
         if ($allOwnedObjects) {
             # Debug: Show what object types we actually received
             Write-Verbose "DEBUG: Raw owned objects received:"
             foreach ($obj in $allOwnedObjects) {
                 Write-Verbose "  Object: $($obj.displayName), Type: $($obj.'@odata.type'), ID: $($obj.id)"
             }
-            
+
             # Categorize owned objects by type
             $applications = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.application' }
             $servicePrincipals = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.servicePrincipal' }
             $groups = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.group' }
             $devices = $allOwnedObjects | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.device' }
             $others = $allOwnedObjects | Where-Object { $_.'@odata.type' -notin @('#microsoft.graph.application', '#microsoft.graph.servicePrincipal', '#microsoft.graph.group', '#microsoft.graph.device') }
-            
+
             # Debug: Show categorization results
             Write-Verbose "DEBUG: Categorization results:"
             Write-Verbose "  Applications: $(@($applications).Count) objects"
@@ -7126,14 +7122,14 @@ function Get-OwnedObjectsViaGraph {
             Write-Verbose "  Groups: $(@($groups).Count) objects"
             Write-Verbose "  Devices: $(@($devices).Count) objects"
             Write-Verbose "  Others: $(@($others).Count) objects"
-            
+
             # Create analysis summary with robust counting (handles single objects and arrays)
             $appCount = if ($applications) { @($applications).Count } else { 0 }
             $spCount = if ($servicePrincipals) { @($servicePrincipals).Count } else { 0 }
             $groupCount = if ($groups) { @($groups).Count } else { 0 }
             $deviceCount = if ($devices) { @($devices).Count } else { 0 }
             $otherCount = if ($others) { @($others).Count } else { 0 }
-            
+
             $analysis = @{
                 TotalOwnedObjects = $allOwnedObjects.Count
                 OwnedApplications = $appCount
@@ -7143,9 +7139,9 @@ function Get-OwnedObjectsViaGraph {
                 OtherOwnedObjects = $otherCount
                 PrivilegeEscalationOpportunities = $appCount # Applications are key for privilege escalation
             }
-            
+
             Write-Verbose "Found $(@($allOwnedObjects).Count) owned objects via Graph API: $appCount apps, $spCount SPs, $groupCount groups"
-            
+
             return @{
                 OwnedObjects = $allOwnedObjects
                 Applications = $applications
@@ -7157,7 +7153,7 @@ function Get-OwnedObjectsViaGraph {
                 Error = $null
             }
         } else {
-            return @{ 
+            return @{
                 OwnedObjects = @()
                 Applications = @()
                 ServicePrincipals = @()
@@ -7183,18 +7179,18 @@ function Test-ApplicationOwnership {
         [string]$ApplicationId,
         [array]$OwnedApplications
     )
-    
+
     if (-not $OwnedApplications -or $OwnedApplications.Count -eq 0) {
         return $false
     }
-    
+
     # Check by AppId (client ID) or object ID
     foreach ($ownedApp in $OwnedApplications) {
         if ($ownedApp.appId -eq $ApplicationId -or $ownedApp.id -eq $ApplicationId) {
             return $true
         }
     }
-    
+
     return $false
 }
 
@@ -7208,10 +7204,10 @@ function Get-MonitoringAndLoggingDetails {
         [Parameter(Mandatory = $true)]
         [array]$Resources
     )
-    
+
     try {
         Write-Debug "Getting monitoring and logging details"
-        
+
         $monitoringDetails = @{
             LogAnalyticsWorkspaces = @()
             ApplicationInsights = @()
@@ -7220,7 +7216,7 @@ function Get-MonitoringAndLoggingDetails {
             AlertRules = @()
             Error = $null
         }
-        
+
         # Get Log Analytics Workspaces
         $logAnalyticsResources = $Resources | Where-Object { $_.type -eq "Microsoft.OperationalInsights/workspaces" }
         foreach ($laResource in $logAnalyticsResources) {
@@ -7240,7 +7236,7 @@ function Get-MonitoringAndLoggingDetails {
                         DataSources = @()
                         ConnectedSources = @()
                     }
-                    
+
                     # Get data sources
                     try {
                         $dataSourcesInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($laResource.id)/dataSources?api-version=2020-08-01" -SuppressWarnings $true
@@ -7256,14 +7252,14 @@ function Get-MonitoringAndLoggingDetails {
                     } catch {
                         Write-Debug "Could not retrieve data sources for workspace $($laResource.name): $($_.Exception.Message)"
                     }
-                    
+
                     $monitoringDetails.LogAnalyticsWorkspaces += $laDetail
                 }
             } catch {
                 Write-Debug "Could not retrieve Log Analytics workspace details for $($laResource.name): $($_.Exception.Message)"
             }
         }
-        
+
         # Get Application Insights
         $appInsightsResources = $Resources | Where-Object { $_.type -eq "Microsoft.Insights/components" }
         foreach ($aiResource in $appInsightsResources) {
@@ -7286,14 +7282,14 @@ function Get-MonitoringAndLoggingDetails {
                         DisableIpMasking = $aiInfo.properties.DisableIpMasking
                         ImmediatePurgeDataOn30Days = $aiInfo.properties.ImmediatePurgeDataOn30Days
                     }
-                    
+
                     $monitoringDetails.ApplicationInsights += $aiDetail
                 }
             } catch {
                 Write-Debug "Could not retrieve Application Insights details for $($aiResource.name): $($_.Exception.Message)"
             }
         }
-        
+
         # Get Action Groups
         $actionGroupResources = $Resources | Where-Object { $_.type -eq "Microsoft.Insights/actionGroups" }
         foreach ($agResource in $actionGroupResources) {
@@ -7314,17 +7310,17 @@ function Get-MonitoringAndLoggingDetails {
                         LogicAppReceivers = if ($agInfo.properties.logicAppReceivers) { $agInfo.properties.logicAppReceivers.Count } else { 0 }
                         AzureFunctionReceivers = if ($agInfo.properties.azureFunctionReceivers) { $agInfo.properties.azureFunctionReceivers.Count } else { 0 }
                     }
-                    
+
                     $monitoringDetails.ActionGroups += $agDetail
                 }
             } catch {
                 Write-Debug "Could not retrieve Action Group details for $($agResource.name): $($_.Exception.Message)"
             }
         }
-        
+
         # Get Alert Rules (both classic and new)
-        $alertResources = $Resources | Where-Object { 
-            $_.type -in @("Microsoft.Insights/alertrules", "Microsoft.Insights/metricalerts", "Microsoft.Insights/activityLogAlerts", "Microsoft.Insights/scheduledQueryRules") 
+        $alertResources = $Resources | Where-Object {
+            $_.type -in @("Microsoft.Insights/alertrules", "Microsoft.Insights/metricalerts", "Microsoft.Insights/activityLogAlerts", "Microsoft.Insights/scheduledQueryRules")
         }
         foreach ($alertResource in $alertResources) {
             try {
@@ -7345,24 +7341,24 @@ function Get-MonitoringAndLoggingDetails {
                         TargetResourceType = $alertInfo.properties.targetResourceType
                         Scopes = if ($alertInfo.properties.scopes) { $alertInfo.properties.scopes.Count } else { 0 }
                     }
-                    
+
                     $monitoringDetails.AlertRules += $alertDetail
                 }
             } catch {
                 Write-Debug "Could not retrieve Alert Rule details for $($alertResource.name): $($_.Exception.Message)"
             }
         }
-        
+
         # Get diagnostic settings for key resources
         $keyResourceTypes = @(
             "Microsoft.Compute/virtualMachines",
-            "Microsoft.KeyVault/vaults", 
+            "Microsoft.KeyVault/vaults",
             "Microsoft.Storage/storageAccounts",
             "Microsoft.Sql/servers",
             "Microsoft.Network/networkSecurityGroups",
             "Microsoft.Web/sites"
         )
-        
+
         $keyResources = $Resources | Where-Object { $_.type -in $keyResourceTypes }
         foreach ($resource in $keyResources | Select-Object -First 10) { # Limit to first 10 to avoid too many API calls
             try {
@@ -7380,7 +7376,7 @@ function Get-MonitoringAndLoggingDetails {
                             MetricsEnabled = if ($diagSetting.properties.metrics) { $diagSetting.properties.metrics.Count } else { 0 }
                             LogAnalyticsDestinationType = $diagSetting.properties.logAnalyticsDestinationType
                         }
-                        
+
                         $monitoringDetails.DiagnosticSettings += $diagDetail
                     }
                 }
@@ -7388,7 +7384,7 @@ function Get-MonitoringAndLoggingDetails {
                 Write-Debug "Could not retrieve diagnostic settings for $($resource.name): $($_.Exception.Message)"
             }
         }
-        
+
         # Analyze monitoring coverage
         $monitoringDetails.MonitoringAnalysis = @{
             LogAnalyticsWorkspaceCount = $monitoringDetails.LogAnalyticsWorkspaces.Count
@@ -7398,15 +7394,15 @@ function Get-MonitoringAndLoggingDetails {
             DiagnosticSettingsCount = $monitoringDetails.DiagnosticSettings.Count
             EnabledAlertRules = ($monitoringDetails.AlertRules | Where-Object { $_.Enabled }).Count
             ResourcesWithDiagnostics = ($monitoringDetails.DiagnosticSettings | Select-Object ResourceName -Unique).Count
-            TotalActionGroupReceivers = ($monitoringDetails.ActionGroups | ForEach-Object { 
-                $_.EmailReceivers + $_.SmsReceivers + $_.WebhookReceivers + $_.AzureAppPushReceivers + $_.AutomationRunbookReceivers + $_.LogicAppReceivers + $_.AzureFunctionReceivers 
+            TotalActionGroupReceivers = ($monitoringDetails.ActionGroups | ForEach-Object {
+                $_.EmailReceivers + $_.SmsReceivers + $_.WebhookReceivers + $_.AzureAppPushReceivers + $_.AutomationRunbookReceivers + $_.LogicAppReceivers + $_.AzureFunctionReceivers
             } | Measure-Object -Sum).Sum
             HasCentralizedLogging = $monitoringDetails.LogAnalyticsWorkspaces.Count -gt 0
             HasApplicationMonitoring = $monitoringDetails.ApplicationInsights.Count -gt 0
         }
-        
+
         return $monitoringDetails
-        
+
     } catch {
         Write-Warning "Failed to get monitoring and logging details: $($_.Exception.Message)"
         return @{
@@ -7422,16 +7418,16 @@ function Get-AzureVMUserData {
     #>
     [CmdletBinding()]
     param()
-    
+
     try {
         Write-Debug "Attempting to retrieve Azure VM user data..."
-        
+
         $uri = "http://169.254.169.254/metadata/instance/compute/userData?api-version=2021-01-01&format=text"
         $headers = @{ "Metadata" = "true" }
-        
+
         # Short timeout as this only works from within Azure VMs
         $userData = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get -TimeoutSec 3 -ErrorAction Stop
-        
+
         if ($userData) {
             Write-Debug "User data retrieved successfully"
             # userData comes Base64 encoded; decode to UTF8 string
@@ -7462,36 +7458,36 @@ function Initialize-Authentication {
     #>
     [CmdletBinding()]
     param()
-    
+
     Write-Output "Initializing authentication..."
-    
+
     # Validate provided tokens before proceeding with authentication
     if ((-not $UseCurrentUser) -and (-not $UseAzureCLI) -and ($AccessTokenARM -or $AccessTokenGraph)) {
         Write-Output "`nValidating provided tokens..."
-        
+
         $tokenValidationErrors = @()
         $currentUtc = [DateTime]::UtcNow
-        
+
         # Validate ARM token
         if ($AccessTokenARM) {
             try {
                 Write-Output "  Checking ARM token..."
-                
+
                 # Decode JWT token to check expiration and audience
                 $tokenParts = $AccessTokenARM.Split('.')
                 if ($tokenParts.Length -ge 2) {
                     # Handle URL-safe Base64 encoding and padding for JWT tokens
                     $payload = $tokenParts[1]
-                    
+
                     # Convert URL-safe Base64 to standard Base64
                     $payload = $payload.Replace('-', '+').Replace('_', '/')
-                    
+
                     # Add padding if needed for base64 decoding
                     $paddingNeeded = 4 - ($payload.Length % 4)
                     if ($paddingNeeded -ne 4) {
                         $payload += "=" * $paddingNeeded
                     }
-                    
+
                     try {
                         $payloadBytes = [System.Convert]::FromBase64String($payload)
                         $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
@@ -7502,11 +7498,11 @@ function Initialize-Authentication {
                         $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
                     }
                     $claims = $decodedPayload | ConvertFrom-Json
-                    
+
                     # Check expiration
                     if ($claims.exp) {
                         $expirationUtc = [DateTimeOffset]::FromUnixTimeSeconds($claims.exp).UtcDateTime
-                        
+
                         if ($expirationUtc -le $currentUtc) {
                             Write-Host "    ARM Token Expiration: $($expirationUtc.ToString('yyyy-MM-dd HH:mm:ss')) UTC" -NoNewline
                             Write-Host " [EXPIRED]" -ForegroundColor Red
@@ -7517,7 +7513,7 @@ function Initialize-Authentication {
                             Write-Output "    ARM Token Status: Valid (expires in $([math]::Round($timeRemaining.TotalMinutes, 1)) minutes)"
                         }
                     }
-                    
+
                     # Check audience (should be Azure Resource Manager)
                     if ($claims.aud) {
                         Write-Output "    ARM Token Audience: $($claims.aud)"
@@ -7526,14 +7522,14 @@ function Initialize-Authentication {
                             "https://management.core.windows.net/",
                             "https://management.azure.com"
                         )
-                        
+
                         if ($claims.aud -notin $validArmAudiences) {
                             $tokenValidationErrors += "ARM token has INVALID AUDIENCE '$($claims.aud)'. Expected one of: $($validArmAudiences -join ', ')"
                         } else {
                             Write-Output "    ARM Token Audience: Valid"
                         }
                     }
-                    
+
                     # Show tenant info
                     if ($claims.tid) {
                         $Script:ARMTokenTenant = $claims.tid
@@ -7544,19 +7540,19 @@ function Initialize-Authentication {
                 $tokenValidationErrors += "Failed to parse ARM token: $($_.Exception.Message)"
             }
         }
-        
-        # Validate Graph token  
+
+        # Validate Graph token
         if ($AccessTokenGraph) {
             try {
                 Write-Output "  Checking Graph token..."
-                
+
                 # Decode JWT token to check expiration and audience
                 $tokenParts = $AccessTokenGraph.Split('.')
                 if ($tokenParts.Length -ne 3) {
                     $tokenValidationErrors += "Graph token format invalid: JWT tokens must have 3 parts (header.payload.signature), found $($tokenParts.Length) parts"
                     throw "Invalid JWT token format"
                 }
-                
+
                 try {
                     # Add padding if needed for base64 decoding
                     $payload = $tokenParts[1]
@@ -7564,18 +7560,18 @@ function Initialize-Authentication {
                     if ($paddingNeeded -ne 4) {
                         $payload += "=" * $paddingNeeded
                     }
-                    
+
                     $decodedPayload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($payload))
                     $claims = $decodedPayload | ConvertFrom-Json
                 } catch {
                     $tokenValidationErrors += "Graph token payload invalid: Unable to decode JWT payload - $($_.Exception.Message)"
                     throw "Failed to decode JWT payload"
                 }
-                    
+
                     # Check expiration
                     if ($claims.exp) {
                         $expirationUtc = [DateTimeOffset]::FromUnixTimeSeconds($claims.exp).UtcDateTime
-                        
+
                         if ($expirationUtc -le $currentUtc) {
                             Write-Host "    Graph Token Expiration: $($expirationUtc.ToString('yyyy-MM-dd HH:mm:ss')) UTC" -NoNewline
                             Write-Host " [EXPIRED]" -ForegroundColor Red
@@ -7586,7 +7582,7 @@ function Initialize-Authentication {
                             Write-Output "    Graph Token Status: Valid (expires in $([math]::Round($timeRemaining.TotalMinutes, 1)) minutes)"
                         }
                     }
-                    
+
                     # Check audience (should be Microsoft Graph)
                     if ($claims.aud) {
                         Write-Output "    Graph Token Audience: $($claims.aud)"
@@ -7595,44 +7591,44 @@ function Initialize-Authentication {
                             "https://graph.microsoft.com",
                             "https://graph.microsoft.com/"
                         )
-                        
+
                         if ($claims.aud -notin $validGraphAudiences) {
                             $tokenValidationErrors += "Graph token has INVALID AUDIENCE '$($claims.aud)'. Expected one of: $($validGraphAudiences -join ', ')"
                         } else {
                             Write-Output "    Graph Token Audience: Valid"
                         }
                     }
-                    
+
                     # Check scopes and roles (comprehensive permission analysis)
                     $tokenScopes = @()
                     $tokenRoles = @()
                     $permissionIssues = @()
-                    
+
                     # Check delegated permissions (scopes) - for user tokens
                     if ($claims.scp) {
                         $tokenScopes = $claims.scp -split ' '
                         Write-Output "    Graph Token Scopes (Delegated): $($claims.scp)"
                     }
-                    
+
                     # Check application permissions (roles) - for app-only tokens
                     if ($claims.roles) {
                         $tokenRoles = $claims.roles
                         Write-Output "    Graph Token Roles (Application): $($claims.roles -join ', ')"
                     }
-                    
+
                     # Analyze permission coverage
                     $permissionIssues = @()  # Initialize array for tracking permission issues
                     $basicScopes = @('User.Read', 'User.ReadBasic.All')
                     $advancedScopes = @('User.Read.All', 'Directory.Read.All', 'Group.Read.All', 'Application.Read.All')
-                    
+
                     # Check for basic read permissions (including advanced scopes that provide basic read)
                     $basicScopeFound = ($tokenScopes | Where-Object { $_ -in $basicScopes }).Count -gt 0
                     $advancedUserRead = ($tokenScopes | Where-Object { $_ -in @('User.Read.All', 'Directory.Read.All') }).Count -gt 0
                     $hasBasicRead = $basicScopeFound -or $advancedUserRead
-                    
+
                     $hasAdvancedRead = ($tokenScopes | Where-Object { $_ -in $advancedScopes }).Count -gt 0
                     $hasAppPermissions = $tokenRoles.Count -gt 0
-                    
+
                     Write-Output "    Permission Analysis:"
                     if ($hasBasicRead) {
                         if ($advancedUserRead) {
@@ -7645,24 +7641,24 @@ function Initialize-Authentication {
                         Write-Output "      Basic User Read: MISSING (User.Read, User.ReadBasic.All, User.Read.All, or Directory.Read.All required)"
                         $permissionIssues += "Missing basic user read permission"
                     }
-                    
+
                     if ($hasAdvancedRead) {
                         Write-Output "      Advanced Directory Read: Available"
                     } else {
                         Write-Output "      Advanced Directory Read: MISSING (Directory.Read.All recommended)"
                         $permissionIssues += "Missing advanced directory read permissions"
                     }
-                    
+
                     if ($hasAppPermissions) {
                         Write-Output "      Application Permissions: Available ($($tokenRoles.Count) roles)"
                     } else {
                         Write-Output "      Application Permissions: None (delegated token)"
                     }
-                    
+
             # Add specific permission errors if basic read is missing
             if (-not $hasBasicRead -and -not $hasAppPermissions) {
                 $tokenValidationErrors += "Graph token lacks basic permissions. No User.Read scope or application roles found."
-                
+
                 # Show permission guidance immediately for permission issues
                 Write-Output ""
                 Write-Warning "CRITICAL: Graph token has insufficient permissions for basic operations"
@@ -7685,7 +7681,7 @@ function Initialize-Authentication {
                 Write-Output "Run this command to see detailed guidance:"
                 Write-Output "  Show-GraphPermissionGuidance -MissingPermission 'Advanced permissions' -ErrorContext 'Enhanced enumeration'"
             }
-            
+
             # Store permission analysis for later use
             $Script:GraphTokenPermissions = @{
                 Scopes = $tokenScopes
@@ -7695,7 +7691,7 @@ function Initialize-Authentication {
                 HasAppPermissions = $hasAppPermissions
                 Issues = $permissionIssues
             }
-            
+
             # Show tenant info
             if ($claims.tid) {
                 $Script:GraphTokenTenant = $claims.tid
@@ -7705,20 +7701,20 @@ function Initialize-Authentication {
                 $tokenValidationErrors += "Failed to parse Graph token: $($_.Exception.Message)"
             }
         }
-        
+
         # Analyze validation errors to determine if we can proceed
         if ($tokenValidationErrors.Count -gt 0) {
             Write-Output "`nTOKEN VALIDATION ISSUES DETECTED:"
             foreach ($validationerror in $tokenValidationErrors) {
                 Write-Output "  ERROR: $validationerror"
             }
-            
+
             # Check if we can proceed with Graph-only mode
             $armTokenErrors = $tokenValidationErrors | Where-Object { $_ -like "*ARM token*" }
             $graphTokenErrors = $tokenValidationErrors | Where-Object { $_ -like "*Graph token*" }
-            
+
             $canProceedWithGraphOnly = ($AccessTokenGraph -and $graphTokenErrors.Count -eq 0 -and $armTokenErrors.Count -gt 0)
-            
+
             if ($canProceedWithGraphOnly) {
                 Write-Output "`nGRAPH-ONLY MODE AVAILABLE:"
                 Write-Output "  Your Graph token is valid and can be used for Azure AD enumeration."
@@ -7729,7 +7725,7 @@ function Initialize-Authentication {
                 Write-Output "  2. Get a fresh ARM token for full enumeration"
                 Write-Output "  3. Add -GraphOnly parameter to skip this prompt in future"
                 Write-Output ""
-                
+
                 # Check if GraphOnly parameter was specified
                 if ($GraphOnly) {
                     Write-Output "GraphOnly parameter specified - proceeding with Graph-only enumeration..."
@@ -7738,7 +7734,7 @@ function Initialize-Authentication {
                     $Script:PerformARMChecks = $false
                     return
                 }
-                
+
                 # Check if user wants to proceed (in interactive mode) or auto-proceed in non-interactive
                 if ([Environment]::UserInteractive -and -not $env:CI) {
                     $response = Read-Host "Continue with Graph-only enumeration? (Y/N)"
@@ -7760,7 +7756,7 @@ function Initialize-Authentication {
                     return
                 }
             }
-            
+
             Write-Output "`nRESOLUTION STEPS:"
             Write-Output "  1. Get fresh tokens that haven't expired"
             Write-Output "  2. Ensure ARM token audience is: https://management.azure.com/"
@@ -7770,20 +7766,20 @@ function Initialize-Authentication {
             Write-Output "     Connect-MgGraph -Scopes 'User.Read','Directory.Read.All'"
             Write-Output "  5. Or use Azure CLI: az login --allow-no-subscriptions"
             Write-Output ""
-            
+
             throw "Token validation failed. Please update your tokens and try again."
         }
-        
+
         Write-Output "  Token validation completed successfully."
-        
+
         # Check for tenant mismatches after successful token validation
         Test-TenantMismatch
     }
-    
+
     if ($UseCurrentUser) {
         Write-Verbose "Using current user authentication"
 
-        
+
         # Initialize Azure context
         try {
             $context = Get-AzContext -ErrorAction SilentlyContinue
@@ -7794,7 +7790,7 @@ function Initialize-Authentication {
             } else {
                 Write-Verbose "Using existing Azure context: $($context.Account.Id)"
             }
-            
+
             # Get ARM token
             $token = Get-AzAccessTokenFromContext
             if ($token) {
@@ -7804,7 +7800,7 @@ function Initialize-Authentication {
                 Write-Verbose "ARM access token acquired successfully"
             } else {
                 Write-Warning "Could not acquire ARM access token from current Az context."
-                
+
                 # Offer to fix authentication automatically (if interactive mode is enabled)
                 if (-not $NoInteractiveAuth) {
                     $fixResult = Invoke-AuthenticationFix -FixType "ARM" -Interactive
@@ -7829,11 +7825,11 @@ function Initialize-Authentication {
                 }
                 }
             }
-            
+
         } catch {
             Write-Warning "Failed to initialize Azure context: $($_.Exception.Message)"
         }
-        
+
         # Initialize Microsoft Graph context
         try {
             if (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication) {
@@ -7856,7 +7852,7 @@ function Initialize-Authentication {
                     } catch {
                         Write-Verbose "Could not connect to Microsoft Graph: $($_.Exception.Message)"
                         Write-Verbose "Graph features will be limited to ARM API calls only."
-                        
+
                         # Offer to fix Microsoft Graph authentication (if interactive mode is enabled)
                         if (-not $NoInteractiveAuth) {
                             $graphFixResult = Invoke-AuthenticationFix -FixType "Graph" -Interactive
@@ -7878,13 +7874,13 @@ function Initialize-Authentication {
         } catch {
             Write-Warning "Failed to initialize Microsoft Graph context: $($_.Exception.Message)"
         }
-        
+
         # Check Azure CLI availability for additional capabilities (like owned objects)
         try {
             $azVersion = az version 2>&1
             if ($LASTEXITCODE -eq 0) {
-                Write-Verbose "Azure CLI is available for additional capabilities"
-                
+                Write-Verbose "Azure CLI is available for additional capabilities (version: $($azVersion[0]))"
+
                 # Check if user is already logged in
                 try {
                     $accountShow = az account show --output json 2>&1
@@ -7910,15 +7906,15 @@ function Initialize-Authentication {
         } catch {
             Write-Verbose "Azure CLI not available: $($_.Exception.Message)"
         }
-        
+
     } else {
         Write-Verbose "Using token-based authentication"
-        
+
         # Validate and set ARM token
         if ($AccessTokenARM) {
             $Script:AuthenticationStatus.ARMToken = $true
             Write-Verbose "ARM token provided"
-            
+
             # Try to connect Az context with token
             try {
                 if ($AccessTokenGraph -and $Script:PerformGraphChecks) {
@@ -7938,7 +7934,7 @@ function Initialize-Authentication {
                 Write-Verbose "Will attempt direct ARM API calls with provided token"
             }
         }
-        
+
         # Automatically attempt to retrieve resource-specific tokens for enhanced functionality
         if ($Script:AuthenticationStatus.AzContext -or $AccessTokenARM) {
             Write-Verbose "Attempting to retrieve resource-specific tokens (Storage & Key Vault)..."
@@ -7954,13 +7950,16 @@ function Initialize-Authentication {
                 Write-Verbose "Resource-specific token retrieval failed (non-critical): $($_.Exception.Message)"
             }
         }
-        
+
         # Set Graph token if provided separately
         if ($AccessTokenGraph -and -not $Script:AuthenticationStatus.GraphToken -and $Script:PerformGraphChecks) {
             try {
                 # Try connecting to Graph directly
                 if (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication) {
-                    Connect-MgGraph -AccessToken ($AccessTokenGraph | ConvertTo-SecureString -AsPlainText -Force) -ErrorAction Stop
+                    # Note: ConvertTo-SecureString with -AsPlainText is necessary for authentication
+                    # Suppressing PSScriptAnalyzer warning as this is required for Graph authentication
+                    $secureToken = $AccessTokenGraph | ConvertTo-SecureString -AsPlainText -Force
+                    Connect-MgGraph -AccessToken $secureToken -ErrorAction Stop
                     $Script:AuthenticationStatus.GraphContext = $true
                     $Script:AuthenticationStatus.GraphToken = $true
                     Write-Verbose "Connected to Microsoft Graph with provided token"
@@ -7977,39 +7976,39 @@ function Initialize-Authentication {
             Write-Verbose "Graph token provided but Graph checks not requested"
         }
     }
-    
+
     if ($Script:UseAzureCLI) {
         Write-Verbose "Using Azure CLI authentication"
-        
+
         # Initialize Azure CLI with service principal
         $cliAuth = Initialize-AzureCLI -ServicePrincipalId $ServicePrincipalId -ServicePrincipalSecret $ServicePrincipalSecret -TenantId $TenantId
-        
+
         if ($cliAuth.Success) {
             Write-Output "Successfully authenticated via Azure CLI"
             Write-Output "  Tenant: $($cliAuth.AuthenticationDetails.TenantId)"
             Write-Output "  Service Principal: $($cliAuth.AuthenticationDetails.ServicePrincipalId)"
             Write-Output "  Has Subscriptions: $($cliAuth.AuthenticationDetails.HasSubscriptions)"
-            
+
             # Acquire access tokens from Azure CLI
             Write-Verbose "Acquiring access tokens from Azure CLI..."
             $tokenResult = Get-AccessTokenFromAzureCLI -TokenType "Both"
-            
+
             if ($tokenResult.Success) {
                 if ($tokenResult.ARMToken) {
                     $Script:AccessTokenARM = $tokenResult.ARMToken
                     $Script:AuthenticationStatus.ARMToken = $true
                     Write-Verbose "ARM access token acquired from Azure CLI"
                 }
-                
+
                 if ($tokenResult.GraphToken) {
                     $Script:AccessTokenGraph = $tokenResult.GraphToken
                     $Script:AuthenticationStatus.GraphToken = $true
                     Write-Verbose "Graph access token acquired from Azure CLI"
                 }
-                
+
                 $Script:AuthenticationStatus.AzureCLI = $true
                 Write-Verbose "Azure CLI tokens acquired successfully"
-                
+
                 # Check if service principal has subscription access
                 Write-Verbose "Checking subscription access..."
                 $subscriptionCheck = az account show --query "name" --output tsv 2>&1
@@ -8022,7 +8021,7 @@ function Initialize-Authentication {
                     Write-Warning "2. Use Azure Portal: Subscriptions > Access control (IAM) > Add role assignment"
                     Write-Warning "3. Or use CLI: az role assignment create --role Reader --assignee $ServicePrincipalId --scope /subscriptions/SUBSCRIPTION_ID"
                     Write-Warning ""
-                    
+
                     # Test Graph API permissions
                     $graphPermTest = az rest --method GET --url "https://graph.microsoft.com/v1.0/users?`$top=1" 2>&1
                     if ($LASTEXITCODE -ne 0) {
@@ -8044,47 +8043,47 @@ function Initialize-Authentication {
             throw "Azure CLI authentication failed: $($cliAuth.Error)"
         }
     }
-    
+
     if ($Script:ServicePrincipalMode) {
         Write-Verbose "Using Azure PowerShell Service Principal authentication"
-        
+
         # Initialize Azure PowerShell with service principal
         $spAuth = Initialize-AzServicePrincipal -ApplicationId $ApplicationId -ClientSecret $ClientSecret -TenantId $TenantId
-        
+
         if ($spAuth.Success) {
             Write-Output "Successfully authenticated via Azure PowerShell Service Principal"
             Write-Output "  Tenant: $($spAuth.AuthenticationDetails.TenantId) ($($spAuth.AuthenticationDetails.TenantDisplayName))"
             Write-Output "  Application: $($spAuth.AuthenticationDetails.ApplicationId)"
             Write-Output "  Has Subscriptions: $($spAuth.AuthenticationDetails.HasSubscriptions) ($($spAuth.AuthenticationDetails.SubscriptionCount) subscriptions)"
-            
+
             # Mark Azure context as available
             $Script:AuthenticationStatus.AzContext = $true
-            
+
             # Acquire access tokens from Azure PowerShell
             Write-Verbose "Acquiring access tokens from Azure PowerShell..."
             $tokenResult = Get-AzAccessTokensFromServicePrincipal
-            
+
             if ($tokenResult.Success) {
                 if ($tokenResult.ARMToken) {
                     $Script:AccessTokenARM = $tokenResult.ARMToken
                     $Script:AuthenticationStatus.ARMToken = $true
                     Write-Verbose "ARM access token acquired from Azure PowerShell"
                 }
-                
+
                 if ($tokenResult.GraphToken) {
                     $Script:AccessTokenGraph = $tokenResult.GraphToken
                     $Script:AuthenticationStatus.GraphToken = $true
                     Write-Verbose "Graph access token acquired from Azure PowerShell"
                 }
-                
+
                 # Store Key Vault token for enhanced Key Vault access
                 if ($tokenResult.KeyVaultToken) {
                     $Script:KeyVaultToken = $tokenResult.KeyVaultToken
                     Write-Verbose "Key Vault access token acquired from Azure PowerShell"
                 }
-                
+
                 Write-Verbose "Azure PowerShell Service Principal tokens acquired successfully"
-                
+
                 # Provide guidance if no subscription access
                 if (-not $spAuth.AuthenticationDetails.HasSubscriptions) {
                     Write-Warning "Service principal has no subscription access."
@@ -8096,7 +8095,7 @@ function Initialize-Authentication {
                     Write-Warning "3. Or use PowerShell: New-AzRoleAssignment -RoleDefinitionName Reader -ServicePrincipalName $ApplicationId -Scope /subscriptions/SUBSCRIPTION_ID"
                     Write-Warning ""
                 }
-                
+
                 # Test Graph API permissions
                 if ($tokenResult.GraphToken) {
                     try {
@@ -8123,22 +8122,22 @@ function Initialize-Authentication {
             throw "Azure PowerShell Service Principal authentication failed: $($spAuth.Error)"
         }
     }
-    
+
     # Report authentication status
     Write-Output "Authentication Status:"
     Write-Output "  Azure ARM API: $($Script:AuthenticationStatus.ARMToken)"
     Write-Output "  Microsoft Graph API: $($Script:AuthenticationStatus.GraphToken)"
     Write-Output "  Azure Context: $($Script:AuthenticationStatus.AzContext)"
     Write-Output "  Graph Context: $($Script:AuthenticationStatus.GraphContext)"
-    
+
     # Run Graph diagnostics if Graph checks are enabled and there are authentication issues
     if ($Script:PerformGraphChecks -and $VerbosePreference -eq 'Continue') {
         Test-GraphAccess
     }
-    
+
     # Validate that required authentication is available for requested checks
     $authenticationErrors = @()
-    
+
     # For ARM checks, if using CurrentUser mode and ARM isn't available, just disable ARM checks
     if ($Script:PerformARMChecks -and -not $Script:AuthenticationStatus.ARMToken) {
         if ($UseCurrentUser) {
@@ -8148,7 +8147,7 @@ function Initialize-Authentication {
             $authenticationErrors += "ARM token required for ARM resource enumeration but not available."
         }
     }
-    
+
     # For Graph checks, if using CurrentUser mode and Graph isn't available, just disable Graph checks
     if ($Script:PerformGraphChecks -and -not $Script:AuthenticationStatus.GraphToken) {
         if ($UseCurrentUser) {
@@ -8158,12 +8157,12 @@ function Initialize-Authentication {
             $authenticationErrors += "Graph token required for Graph user enumeration but not available."
         }
     }
-    
+
     if ($authenticationErrors.Count -gt 0) {
         $errorMessage = "Authentication validation failed:`n" + ($authenticationErrors -join "`n")
         throw $errorMessage
     }
-    
+
     # Check if we have at least one working authentication method
     if (-not $Script:AuthenticationStatus.ARMToken -and -not $Script:AuthenticationStatus.GraphToken) {
         if ($UseCurrentUser) {
@@ -8245,7 +8244,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                 Write-Verbose "Get-MgUser failed: $($_.Exception.Message)"
             }
         }
-        
+
         # Fallback to REST API if cmdlet failed
         if (-not $userDetails) {
             if ($AccessTokenGraph) {
@@ -8272,16 +8271,16 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                 }
             }
         }
-        
+
         if ($userDetails) {
             Write-Output "User Details Retrieved: $($userDetails.displayName) ($($userDetails.userPrincipalName))"
             $output.UserDetails = $userDetails
-            
+
             # Extract additional information from the Graph token itself
             if ($AccessTokenGraph) {
                 try {
                     Write-Output "`nAnalyzing Graph token claims and permissions..."
-                    
+
                     # Decode the JWT token to extract claims
                     $tokenParts = $AccessTokenGraph.Split('.')
                     if ($tokenParts.Length -ge 2) {
@@ -8291,10 +8290,10 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         if ($paddingNeeded -ne 4) {
                             $payload += "=" * $paddingNeeded
                         }
-                        
+
                         $decodedPayload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($payload))
                         $tokenClaims = $decodedPayload | ConvertFrom-Json
-                        
+
                         # Extract useful token information
                         $tokenAnalysis = @{
                             Audience = $tokenClaims.aud
@@ -8308,22 +8307,22 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                             Subject = $tokenClaims.sub
                             AuthenticationMethod = $tokenClaims.amr
                         }
-                        
+
                         $output.GraphTokenAnalysis = $tokenAnalysis
-                        
+
                         Write-Output "  Token Audience: $($tokenAnalysis.Audience)"
                         Write-Output "  Token Tenant ID: $($tokenAnalysis.TenantId)"
                         Write-Output "  Token App ID: $($tokenAnalysis.AppId)"
                         Write-Output "  Token Scopes: $($tokenAnalysis.Scopes)"
                         Write-Output "  Token Expires: $($tokenAnalysis.ExpiresAt)"
-                        
+
                         if ($tokenAnalysis.Roles -and $tokenAnalysis.Roles.Count -gt 0) {
                             Write-Output "  Token Roles: $($tokenAnalysis.Roles -join ', ')"
                         }
-                        
+
                         # Try some alternative Graph API calls that might work with limited permissions
                         Write-Output "`nTrying alternative Graph API endpoints with current permissions..."
-                        
+
                         # Try to get current user's photo/profile picture
                         try {
                             $photoResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/photo" -Headers $headers -Method GET
@@ -8334,7 +8333,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         } catch {
                             Write-Verbose "  User photo not accessible: $($_.Exception.Message)"
                         }
-                        
+
                         # Try to get user's OneDrive information
                         try {
                             $driveResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/drive" -Headers $headers -Method GET
@@ -8349,7 +8348,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         } catch {
                             Write-Verbose "  OneDrive not accessible: $($_.Exception.Message)"
                         }
-                        
+
                         # Try to get user's recent activities
                         try {
                             $activitiesResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/activities/recent" -Headers $headers -Method GET
@@ -8360,7 +8359,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         } catch {
                             Write-Verbose "  Recent activities not accessible: $($_.Exception.Message)"
                         }
-                        
+
                         # Try to get user's calendar events
                         try {
                             $calendarResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/events?`$top=5" -Headers $headers -Method GET
@@ -8371,7 +8370,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         } catch {
                             Write-Verbose "  Calendar events not accessible: $($_.Exception.Message)"
                         }
-                        
+
                         # Try to get user's messages
                         try {
                             $messagesResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/messages?`$top=5&`$select=id,subject,from,receivedDateTime" -Headers $headers -Method GET
@@ -8382,13 +8381,13 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         } catch {
                             Write-Verbose "  Email messages not accessible: $($_.Exception.Message)"
                         }
-                        
+
                     }
                 } catch {
                     Write-Verbose "Failed to analyze Graph token: $($_.Exception.Message)"
                 }
             }
-            
+
             # Update filename if it was set to pending and we now have UPN
             if ($OutputFile -like "*pending_*_AzureResources.json") {
                 $timestamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -8397,10 +8396,10 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                 $OutputFile = Join-Path "Results" $newFilename
                 Write-Verbose "Updated filename with UPN: $OutputFile"
             }
-            
+
             # Try to gather additional Graph API information
             Write-Output "`nGathering additional information from Microsoft Graph..."
-            
+
             # Get tenant information
             try {
                 if ($AccessTokenGraph) {
@@ -8428,7 +8427,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
             catch {
                 Write-Verbose "Could not retrieve organization details: $($_.Exception.Message)"
             }
-            
+
             # Get user's group memberships
             try {
                 if ($AccessTokenGraph) {
@@ -8455,7 +8454,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
             catch {
                 Write-Verbose "Could not retrieve group memberships: $($_.Exception.Message)"
             }
-            
+
             # Get directory roles (if user has any)
             try {
                 if ($AccessTokenGraph) {
@@ -8482,7 +8481,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
             catch {
                 Write-Verbose "Could not retrieve directory roles: $($_.Exception.Message)"
             }
-            
+
             # Try to get accessible applications (if permissions allow)
             try {
                 if ($AccessTokenGraph) {
@@ -8494,17 +8493,17 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                 } else {
                     $applications = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/applications?`$top=100"
                 }
-                
+
                 if ($applications -and $applications.value) {
                     Write-Output "  Found $($applications.value.Count) applications. Retrieving comprehensive details..."
-                    
+
                     $output.Applications = @()
                     $appCount = 0
-                    
+
                     foreach ($app in $applications.value) {
                         $appCount++
                         Write-Progress -Activity "Processing Applications" -Status "Processing application: $($app.displayName) ($appCount/$($applications.value.Count))" -PercentComplete (($appCount / $applications.value.Count) * 100)
-                        
+
                         try {
                             Write-Debug "Getting detailed information for application: $($app.displayName) (ID: $($app.id))"
                             $detailedAppInfo = Get-ApplicationDetails -ApplicationId $app.id -AccessTokenGraph $AccessTokenGraph
@@ -8522,7 +8521,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                             }
                         }
                     }
-                    
+
                     Write-Progress -Activity "Processing Applications" -Completed
                     Write-Output "  Application enumeration completed. Retrieved detailed information for $($output.Applications.Count) applications."
                 }
@@ -8530,9 +8529,9 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
             catch {
                 Write-Verbose "Could not retrieve applications (insufficient permissions): $($_.Exception.Message)"
             }
-            
+
             Write-Output "Microsoft Graph enumeration completed successfully."
-            
+
             # Get detailed Azure AD information
             Write-Output "`nRetrieving comprehensive Azure Active Directory details..."
             try {
@@ -8574,7 +8573,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
     } catch {
         Write-Warning "Failed to retrieve user details: $($_.Exception.Message)"
         Write-Verbose "You may need to run 'Connect-MgGraph -Scopes User.Read' manually before running the script."
-        
+
         # Even if Graph enumeration fails, try to extract basic tenant info from tokens
         Write-Output "`nAttempting to extract tenant information from available tokens..."
         if ($AccessTokenARM -and $output.TenantId -eq "Unknown") {
@@ -8592,11 +8591,11 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                     $decodedBytes = [System.Convert]::FromBase64String($payload)
                     $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
                     $claims = $decodedJson | ConvertFrom-Json
-                    
+
                     if ($claims.tid) {
                         $output.TenantId = $claims.tid
                         Write-Output "Extracted tenant ID from ARM token: $($claims.tid)"
-                        
+
                         # Also try to get tenant name/issuer
                         if ($claims.iss) {
                             $output.TenantIssuer = $claims.iss
@@ -8608,7 +8607,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                 Write-Verbose "Could not extract tenant information from ARM token: $($_.Exception.Message)"
             }
         }
-        
+
         if ($AccessTokenGraph -and -not $output.UserDetails) {
             try {
                 # Try to extract basic user info from Graph token
@@ -8623,11 +8622,11 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                     $decodedBytes = [System.Convert]::FromBase64String($payload)
                     $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
                     $claims = $decodedJson | ConvertFrom-Json
-                    
+
                     if ($claims.upn -or $claims.unique_name -or $claims.preferred_username) {
                         # Use PowerShell 5.1 compatible null coalescing logic
                         $userPrincipal = if ($claims.upn) { $claims.upn } elseif ($claims.unique_name) { $claims.unique_name } else { $claims.preferred_username }
-                        
+
                         $extractedUserInfo = @{
                             upn = $userPrincipal
                             name = $claims.name
@@ -8636,7 +8635,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         }
                         $output.ExtractedUserInfo = $extractedUserInfo
                         Write-Output "Extracted user info from Graph token: $($extractedUserInfo.upn)"
-                        
+
                         # Update tenant ID if we got it from Graph token
                         if ($claims.tid -and $output.TenantId -eq "Unknown") {
                             $output.TenantId = $claims.tid
@@ -8650,7 +8649,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
     }
 } elseif ($Script:PerformGraphChecks) {
     Write-Output "Microsoft Graph checks requested but Graph access not available - user details will be limited."
-    
+
     # Still try to extract information from tokens even without Graph API access
     Write-Output "`nAttempting to extract available information from tokens..."
     if ($AccessTokenARM) {
@@ -8666,10 +8665,10 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                 $decodedBytes = [System.Convert]::FromBase64String($payload)
                 $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
                 $claims = $decodedJson | ConvertFrom-Json
-                
+
                 # Use PowerShell 5.1 compatible null coalescing logic
                 $userPrincipal = if ($claims.upn) { $claims.upn } elseif ($claims.unique_name) { $claims.unique_name } else { $claims.preferred_username }
-                
+
                 $extractedInfo = @{
                     TenantId = $claims.tid
                     Upn = $userPrincipal
@@ -8679,7 +8678,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                     Source = "ARM Token Claims"
                 }
                 $output.ExtractedTokenInfo = $extractedInfo
-                
+
                 if ($claims.tid) {
                     $output.TenantId = $claims.tid
                     Write-Output "Extracted tenant ID: $($claims.tid)"
@@ -8703,86 +8702,106 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
     Write-Output $separator
     Write-Output "STARTING AZURE RESOURCE ENUMERATION"
     Write-Output $separator
-    
+
     try {
         $context = Get-AzContext -ErrorAction SilentlyContinue
         $tenantId = $null
         $subscriptionId = $null
         $subscriptionName = $null
         $subscriptionSelected = $false
-        
-        # Check if there's an existing valid context that user might want to keep
+
+        # Check if there's an existing valid context, but always verify subscription choice
         if ($null -ne $context -and $context.Subscription -and $context.Subscription.Id) {
             $tenantId = $context.Tenant.Id
             $subscriptionId = $context.Subscription.Id
             $subscriptionName = $context.Subscription.Name
-            
-            # Check if this might be an unexpected/test context
-            $isTestSubscription = $subscriptionName -like "*test*" -or $subscriptionName -like "*demo*" -or $subscriptionName -like "*trial*"
-            
-            if ($isTestSubscription -and -not $NoInteractiveAuth) {
-                Write-Warning "Current Azure context is using subscription '$subscriptionName' - this appears to be a test/demo subscription"
-                Write-Output "Tenant ID: $tenantId"
-                Write-Output "Subscription: $subscriptionName ($subscriptionId)"
-                Write-Output ""
-                
-                $continueWithCurrent = Request-UserConfirmation -Message "Do you want to continue with this subscription?"
-                if (-not $continueWithCurrent) {
-                    Write-Host "🔄 Let's select a different subscription..." -ForegroundColor Cyan
-                    $context = $null  # Force subscription selection
+
+            Write-Output "Current Azure PowerShell Context:"
+            Write-Output "Tenant ID: $tenantId"
+            Write-Output "Subscription: $subscriptionName ($subscriptionId)"
+            Write-Output ""
+
+            # Always check if multiple subscriptions are available (unless in non-interactive mode)
+            if (-not $NoInteractiveAuth) {
+                # Check for multiple available subscriptions
+                try {
+                    $availableSubscriptions = Invoke-RestMethod -Uri "https://management.azure.com/subscriptions?api-version=2022-12-01" -Headers @{
+                        Authorization = "Bearer $($Script:AccessTokenARM)"
+                        'Content-Type' = 'application/json'
+                    }
+                    
+                    if ($availableSubscriptions.value -and $availableSubscriptions.value.Count -gt 1) {
+                        Write-Host "🔍 Found $($availableSubscriptions.value.Count) available subscriptions" -ForegroundColor Yellow
+                        
+                        $continueWithCurrent = Request-UserConfirmation -Message "Do you want to use current connected subscription $subscriptionName ($subscriptionId)?"
+                        if (-not $continueWithCurrent) {
+                            Write-Host "🔄 Let's select a different subscription..." -ForegroundColor Cyan
+                            $context = $null  # Force subscription selection
+                        } else {
+                            Write-Host "✓ Continuing with current subscription: $subscriptionName" -ForegroundColor Green
+                            $subscriptionSelected = $true
+                        }
+                    } else {
+                        Write-Verbose "Only one subscription available, continuing with current context"
+                        $subscriptionSelected = $true
+                    }
+                } catch {
+                    Write-Verbose "Could not check available subscriptions: $($_.Exception.Message)"
+                    Write-Verbose "Continuing with current context"
+                    $subscriptionSelected = $true
                 }
-            } elseif ($isTestSubscription -and $NoInteractiveAuth) {
-                Write-Warning "Using test/demo subscription '$subscriptionName' in non-interactive mode"
-                Write-Output "Use -AllowNoSubscription to bypass subscription selection, or run interactively to choose a different subscription"
-                Write-Output "Tenant ID: $tenantId"
-                Write-Output "Subscription: $subscriptionName ($subscriptionId)"
             } else {
-                Write-Output "Using Azure PowerShell Context:"
-                Write-Output "Tenant ID: $tenantId"
-                Write-Output "Subscription: $subscriptionName ($subscriptionId)"
+                # Non-interactive mode - use current context
+                Write-Output "Non-interactive mode: Using current subscription context"
+                $subscriptionSelected = $true
             }
-            $subscriptionSelected = $true
         }
-        
+
         # If no valid context or user chose to select different subscription
         if ($null -eq $context -or -not $subscriptionSelected) {
             Write-Host "🔍 No valid Azure subscription context found or subscription change requested..." -ForegroundColor Yellow
-            
+
             # Use the subscription selection function
             $selectionResult = Select-AzureSubscription -AccessToken $Script:AccessTokenARM -AllowNoSubscription:$AllowNoSubscription -NonInteractive:$NoInteractiveAuth
-            
+
             if ($selectionResult.UserCancelled) {
                 Write-Host "❌ Operation cancelled by user. Exiting..." -ForegroundColor Red
                 return
             }
-            
-            if (-not $selectionResult.Success -and -not $AllowNoSubscription) {
-                Write-Host "❌ No subscription selected and -AllowNoSubscription not specified. Exiting..." -ForegroundColor Red
-                Write-Host "Use -AllowNoSubscription to continue with Graph-only enumeration." -ForegroundColor Gray
+
+            if (-not $selectionResult.Success) {
+                Write-Host "❌ No subscription selected. Exiting..." -ForegroundColor Red
                 return
             }
-            
+
             if ($selectionResult.SubscriptionId) {
                 $tenantId = $selectionResult.TenantId
                 $subscriptionId = $selectionResult.SubscriptionId
                 $subscriptionName = $selectionResult.SubscriptionName
-                
+
                 Write-Output ""
                 Write-Output "Selected subscription details:"
                 Write-Output "Tenant ID: $tenantId"
                 Write-Output "Subscription: $subscriptionName ($subscriptionId)"
-                
-                # Try to set the context for future operations
+
+                # Set the Azure context to the selected subscription for enumeration
+                Write-Output "`nSwitching to selected subscription context..."
                 try {
-                    Set-AzContext -SubscriptionId $subscriptionId -TenantId $tenantId -ErrorAction SilentlyContinue | Out-Null
-                    Write-Verbose "Successfully set Azure context to selected subscription"
+                    $contextResult = Set-AzContext -SubscriptionId $subscriptionId -TenantId $tenantId -ErrorAction Stop
+                    if ($contextResult -and $contextResult.Subscription.Id -eq $subscriptionId) {
+                        Write-Output "✓ Successfully switched to subscription context: $($contextResult.Subscription.Name)"
+                        Write-Verbose "Active context - Subscription: $($contextResult.Subscription.Id), Tenant: $($contextResult.Tenant.Id)"
+                    } else {
+                        Write-Warning "Context switch may not have been successful. Proceeding with REST API calls using subscription ID."
+                    }
                 } catch {
-                    Write-Verbose "Could not set Azure context, but will continue with selected subscription info"
+                    Write-Warning "Failed to set Azure PowerShell context: $($_.Exception.Message)"
+                    Write-Warning "Continuing with REST API enumeration using selected subscription ID: $subscriptionId"
                 }
             } else {
                 # No subscription selected - Graph-only mode
                 Write-Output "Continuing with Graph-only enumeration (no Azure subscription access)"
-                
+
                 # Try to get tenant from token claims
                 try {
                     $tokenPayload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($accessToken.Split('.')[1]))
@@ -8793,17 +8812,17 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     $tenantId = "Unknown"
                     Write-Output "Tenant ID: Unknown"
                 }
-                
+
                 $subscriptionId = "None"
                 $subscriptionName = "Graph-Only Mode"
             }
         }
-        
+
         # Set output properties
         $output.TenantId = $tenantId
         $output.SubscriptionId = $subscriptionId
         $output.SubscriptionName = $subscriptionName
-        
+
         # Continue with enumeration if we have valid identifiers
         if ($subscriptionId -and $subscriptionId -ne "None") {
             # First, test subscription access before attempting full enumeration
@@ -8832,7 +8851,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Warning "Continuing with limited enumeration..."
                 }
             }
-            
+
             # Enumerate resources using Azure Resource Graph API (advanced query)
             Write-Output "`nRetrieving resources via Azure Resource Graph API..."
             $batchRequestBody = @{
@@ -8856,20 +8875,20 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     }
                 )
             }
-            
+
             $resourceGraphResponse = Invoke-ARMRequest -Uri "https://management.azure.com/batch?api-version=2020-06-01" -Method "POST" -Body $batchRequestBody
-            
+
             $resources = $null
             if ($resourceGraphResponse -and $resourceGraphResponse.responses -and $resourceGraphResponse.responses.Count -gt 0) {
                 $rgResponse = $resourceGraphResponse.responses[0]
                 if ($rgResponse.content -and $rgResponse.content.data) {
                     Write-Output "Successfully retrieved resources via Resource Graph API"
-                    
+
                     # Convert Resource Graph table format to standard ARM format
                     $resources = @{ value = @() }
                     $columns = $rgResponse.content.data.columns
                     $rows = $rgResponse.content.data.rows
-                    
+
                     foreach ($row in $rows) {
                         $resourceObj = @{}
                         for ($i = 0; $i -lt $columns.Count; $i++) {
@@ -8877,7 +8896,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                         }
                         $resources.value += [PSCustomObject]$resourceObj
                     }
-                    
+
                     Write-Output "Resource Graph returned $($resources.value.Count) resources with enhanced metadata"
                 } else {
                     Write-Warning "Resource Graph API returned empty or invalid response"
@@ -8885,18 +8904,18 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
             } else {
                 Write-Warning "Resource Graph API call failed, falling back to standard ARM API"
             }
-            
+
             # Fallback to standard ARM API if Resource Graph failed
             if (-not $resources) {
                 Write-Output "`nFalling back to standard ARM resources API..."
                 $resources = Invoke-ARMRequest -Uri "https://management.azure.com/subscriptions/$subscriptionId/resources?api-version=2021-04-01"
             }
-            
+
             if ($resources -and $resources.value) {
                 $output.Resources = $resources.value
                 $resourceCount = $resources.value.Count
                 Write-Output "Successfully retrieved $resourceCount resources"
-                
+
                 # Display resource summary
                 $resourceSummary = $resources.value | Group-Object type | Sort-Object Count -Descending | Select-Object Name, Count
                 Write-Output "`nResource Summary:"
@@ -8905,28 +8924,28 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                 Write-Warning "No resources found or failed to retrieve resources"
                 $output.Resources = @()
             }
-            
+
             # Enumerate resource groups
             Write-Output "`nRetrieving resource groups..."
             $rgs = Invoke-ARMRequest -Uri "https://management.azure.com/subscriptions/$subscriptionId/resourcegroups?api-version=2021-04-01"
             $output.ResourceGroups = @()
-            
+
             if ($rgs -and $rgs.value) {
                 $rgCount = $rgs.value.Count
                 Write-Output "Found $rgCount resource groups"
-                
+
                 # Process each resource group
                 $rgProgress = 0
                 foreach ($rg in $rgs.value) {
                     $rgProgress++
                     Write-Progress -Activity "Processing Resource Groups" -Status "Processing $($rg.name) ($rgProgress/$rgCount)" -PercentComplete (($rgProgress / $rgCount) * 100)
-                    
+
                     Write-Verbose "Processing resource group: $($rg.name)"
-                    
+
                     # Get deployments for this resource group
                     $deployments = Invoke-ARMRequest -Uri "https://management.azure.com$($rg.id)/providers/Microsoft.Resources/deployments?api-version=2021-04-01"
                     $deploymentsSimple = @()
-                    
+
                     if ($deployments -and $deployments.value) {
                         Write-Debug "Found $($deployments.value.Count) deployments in $($rg.name)"
                         foreach ($d in $deployments.value) {
@@ -8938,7 +8957,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                 ParametersExtracted = $false
                                 ParameterExtractionError = $null
                             }
-                            
+
                             # Try to extract deployment parameters using Azure PowerShell cmdlet
                             if ($Script:AuthenticationStatus.AzContext) {
                                 try {
@@ -8958,7 +8977,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                     Write-Verbose "Failed to extract parameters for deployment $($d.name): $($_.Exception.Message)"
                                 }
                             }
-                            
+
                             $deploymentsSimple += $deploymentDetails
                         }
                     }
@@ -8966,13 +8985,13 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     # Get role assignments for this resource group
                     $roles = Invoke-ARMRequest -Uri "https://management.azure.com$($rg.id)/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01"
                     $rolesSimple = @()
-                    
+
                     if ($roles -and $roles.value) {
                         Write-Debug "Found $($roles.value.Count) role assignments in $($rg.name)"
                         foreach ($r in $roles.value) {
                             $roleName = Get-RoleDefinitionName -RoleDefinitionId $r.properties.roleDefinitionId
                             $principalName = Get-PrincipalName -PrincipalId $r.properties.principalId
-                            
+
                             $rolesSimple += [pscustomobject]@{
                                 PrincipalId = $r.properties.principalId
                                 PrincipalName = $principalName
@@ -8994,26 +9013,26 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                         RoleAssignments = $rolesSimple
                     }
                 }
-                
+
                 Write-Progress -Activity "Processing Resource Groups" -Completed
                 Write-Output "Processed $rgCount resource groups successfully"
             } else {
                 Write-Warning "No resource groups found"
             }
 
-            
+
             # Get subscription-level role assignments
             Write-Output "`nRetrieving subscription role assignments..."
             $subsRoles = Invoke-ARMRequest -Uri "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01"
             $subsRolesSimple = @()
-            
+
             if ($subsRoles -and $subsRoles.value) {
                 Write-Output "Found $($subsRoles.value.Count) subscription role assignments"
-                
+
                 foreach ($r in $subsRoles.value) {
                     $roleName = Get-RoleDefinitionName -RoleDefinitionId $r.properties.roleDefinitionId
                     $principalName = Get-PrincipalName -PrincipalId $r.properties.principalId
-                    
+
                     $subsRolesSimple += [pscustomobject]@{
                         PrincipalId = $r.properties.principalId
                         PrincipalName = $principalName
@@ -9025,12 +9044,12 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
             } else {
                 Write-Warning "No subscription role assignments found or access denied"
             }
-            
+
             # Check if there were principal lookup issues
-            $failedPrincipalLookups = $subsRolesSimple | Where-Object { 
-                $_.PrincipalName -in @("No Graph Access", "Principal Not Found", "Lookup Failed", "Error Retrieving Principal") 
+            $failedPrincipalLookups = $subsRolesSimple | Where-Object {
+                $_.PrincipalName -in @("No Graph Access", "Principal Not Found", "Lookup Failed", "Error Retrieving Principal")
             }
-            
+
             if ($failedPrincipalLookups.Count -gt 0) {
                 Write-Warning "`nPrincipal Lookup Issues Detected:"
                 Write-Host "  - $($failedPrincipalLookups.Count) principals could not be resolved to display names" -ForegroundColor Yellow
@@ -9041,10 +9060,10 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                 Write-Host "  3. Or provide a Graph token with: -AccessTokenGraph `$graphToken" -ForegroundColor Gray
                 Write-Host "  4. Use -Verbose flag for detailed Graph authentication diagnostics`n" -ForegroundColor Gray
             }
-            
+
             $output.SubscriptionRoleAssignments = $subsRolesSimple
 
-            
+
             # Initialize detailed resource collections
             $vmDetails = @()
             $publicIpDetails = @()
@@ -9065,13 +9084,13 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                 Write-Output "`nRetrieving detailed resource information..."
                 $resourceProgress = 0
                 $totalResources = $resources.value.Count
-                
+
                 foreach ($r in $resources.value) {
                     $resourceProgress++
                     if ($resourceProgress % 10 -eq 0 -or $resourceProgress -eq $totalResources) {
                         Write-Progress -Activity "Processing Resource Details" -Status "Processing $($r.name) ($resourceProgress/$totalResources)" -PercentComplete (($resourceProgress / $totalResources) * 100)
                     }
-                    
+
                     try {
                         switch -Wildcard ($r.type) {
                             "Microsoft.Network/networkSecurityGroups" {
@@ -9096,7 +9115,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         Peerings = @()
                                         DnsServers = $vnetInfo.properties.dhcpOptions.dnsServers -join ", "
                                     }
-                                    
+
                                     # Get subnet details
                                     if ($vnetInfo.properties.subnets) {
                                         $vnetDetail.Subnets = $vnetInfo.properties.subnets | ForEach-Object {
@@ -9109,7 +9128,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                             }
                                         }
                                     }
-                                    
+
                                     # Get peering details
                                     if ($vnetInfo.properties.virtualNetworkPeerings) {
                                         $vnetDetail.Peerings = $vnetInfo.properties.virtualNetworkPeerings | ForEach-Object {
@@ -9124,7 +9143,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                             }
                                         }
                                     }
-                                    
+
                                     $vnetDetails += $vnetDetail
                                 }
                             }
@@ -9146,7 +9165,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         AuditingEnabled = $false
                                         ThreatDetectionEnabled = $false
                                     }
-                                    
+
                                     # Get databases
                                     try {
                                         $dbsInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($r.id)/databases?api-version=2022-05-01-preview" -SuppressWarnings $true
@@ -9166,7 +9185,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                     } catch {
                                         Write-Debug "Could not retrieve databases for SQL server $($r.name): $($_.Exception.Message)"
                                     }
-                                    
+
                                     # Get firewall rules
                                     try {
                                         $fwRulesInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($r.id)/firewallRules?api-version=2022-05-01-preview" -SuppressWarnings $true
@@ -9183,7 +9202,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                     } catch {
                                         Write-Debug "Could not retrieve firewall rules for SQL server $($r.name): $($_.Exception.Message)"
                                     }
-                                    
+
                                     $sqlServerDetails += $sqlDetail
                                 }
                             }
@@ -9221,9 +9240,9 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         DefaultHostName = $webAppInfo.properties.defaultHostName
                                         ResourceGroup = ($webAppInfo.id -split '/')[4]
                                     }
-                                    
+
                                     $webAppDetails += $webAppDetail
-                                    
+
                                     # Check if it's a Function App
                                     if ($webAppInfo.kind -like "*functionapp*") {
                                         $functionDetails += $webAppDetail
@@ -9244,11 +9263,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         AllowBlobPublicAccess = $storageInfo.properties.allowBlobPublicAccess
                                         ResourceGroup = ($storageInfo.id -split '/')[4]
                                     }
-                                    
+
                                     # Get comprehensive storage details
                                     Write-Output "  Enumerating detailed storage account information for: $($r.name)"
                                     $detailedStorageInfo = Get-StorageAccountDetails -StorageAccountId $r.id -StorageAccountName $r.name
-                                    
+
                                     # Display container information and stats
                                     if ($detailedStorageInfo -and $detailedStorageInfo.Containers) {
                                         $totalContainers = @($detailedStorageInfo.Containers).Count
@@ -9256,40 +9275,40 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         $failedEnumerationContainers = @($detailedStorageInfo.Containers | Where-Object { $_.Blobs -and $_.Blobs.Count -gt 0 -and $_.Blobs[0] -is [string] }).Count
                                         $totalBlobs = 0
                                         $containerNames = @()
-                                        
+
                                         foreach ($container in $detailedStorageInfo.Containers) {
                                             $containerNames += $container.name
                                             if ($container.Blobs -and $container.Blobs.Count -gt 0 -and $container.Blobs[0] -is [hashtable]) {
                                                 $totalBlobs += $container.Blobs.Count
                                             }
                                         }
-                                        
+
                                         Write-Output "    Storage Account Summary:"
                                         Write-Output "      Total Containers: $totalContainers"
                                         Write-Output "      Accessible Containers (blob enum success): $accessibleContainers"
                                         Write-Output "      Failed Enumeration Containers (will use blind download): $failedEnumerationContainers"
                                         Write-Output "      Total Blobs Found: $totalBlobs"
                                         Write-Output "      Container Names: $($containerNames -join ', ')"
-                                        
+
                                         if ($detailedStorageInfo.StorageAccountKey) {
                                             Write-Output "      Storage Key Access: Available"
                                         } else {
                                             Write-Output "      Storage Key Access: Not Available (will use alternative auth methods)"
                                         }
-                                        
+
                                         if ($failedEnumerationContainers -gt 0) {
                                             Write-Output "      Note: $failedEnumerationContainers containers will be processed using blind download (common file name attempts)"
                                         }
                                     }
-                                    
+
                                     # Always attempt file download, even if container listing failed
                                     try {
                                         Write-Output "  Initiating comprehensive file download for Storage Account: $($r.name)"
-                                        
+
                                         # Process existing containers and add blind download containers for failed enumerations
                                         $containersToProcess = @()
                                         $hasFailedEnumerations = $false
-                                        
+
                                         # First, process any existing containers
                                         if ($detailedStorageInfo.Containers -and $detailedStorageInfo.Containers.Count -gt 0) {
                                             foreach ($container in $detailedStorageInfo.Containers) {
@@ -9312,12 +9331,12 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                 }
                                             }
                                         }
-                                        
+
                                         # If no containers found at all, try common container names
                                         if ($containersToProcess.Count -eq 0) {
                                             Write-Output "    No containers enumerated - attempting common container names"
                                             $commonContainerNames = @('$web', '$root', 'data', 'files', 'documents', 'images', 'backup', 'logs', 'temp', 'public', 'private', 'content', 'assets', 'uploads')
-                                            
+
                                             foreach ($containerName in $commonContainerNames) {
                                                 $containersToProcess += @{
                                                     name = $containerName
@@ -9327,31 +9346,31 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                     Error = "Attempting blind download - no listing permissions"
                                                 }
                                             }
-                                            
+
                                             Write-Output "    Attempting blind download from $($commonContainerNames.Count) common container names"
                                             $hasFailedEnumerations = $true
                                         }
-                                        
+
                                         if ($hasFailedEnumerations) {
                                             # Ask user permission before starting blind download mode
                                             Write-Host "`n    WARNING: Blind download mode will attempt to guess common file names." -ForegroundColor Yellow
                                             Write-Host "    This process can take 15-30 minutes to complete and may generate many 404 errors." -ForegroundColor Yellow
                                             Write-Host "    Do you want to proceed with blind download enumeration? (y/N) " -ForegroundColor Cyan -NoNewline
-                                            
+
                                             # 10-second timeout with default to NO
                                             $timeout = 10
                                             $userInput = $null
-                                            
+
                                             # Interactive countdown with proper timeout
                                             $Host.UI.RawUI.FlushInputBuffer()
                                             $startTime = Get-Date
                                             $inputBuffer = ""
                                             $lastCountdown = -1
-                                            
+
                                             do {
                                                 $elapsed = (Get-Date) - $startTime
                                                 $remaining = $timeout - [int]$elapsed.TotalSeconds
-                                                
+
                                                 # Update countdown display if changed
                                                 if ($remaining -ne $lastCountdown -and $remaining -ge 0) {
                                                     if ($lastCountdown -ne -1) {
@@ -9364,9 +9383,9 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                     Write-Host "($remaining seconds) " -ForegroundColor Yellow -NoNewline
                                                     $lastCountdown = $remaining
                                                 }
-                                                
+
                                                 Start-Sleep -Milliseconds 200
-                                                
+
                                                 if ($Host.UI.RawUI.KeyAvailable) {
                                                     $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
                                                     if ($key.VirtualKeyCode -eq 13) { # Enter key
@@ -9383,7 +9402,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                         $pos.X = 0
                                                         $Host.UI.RawUI.CursorPosition = $pos
                                                         Write-Host "    Do you want to proceed with blind download enumeration? (y/N) " -ForegroundColor Cyan -NoNewline
-                                                        
+
                                                         $inputBuffer = $key.Character
                                                         Write-Host $key.Character -NoNewline
                                                         $userInput = $inputBuffer
@@ -9391,7 +9410,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                     }
                                                 }
                                             } while ((Get-Date) - $startTime -lt (New-TimeSpan -Seconds $timeout))
-                                            
+
                                             if (-not $userInput) {
                                                 # Clear countdown and show timeout message
                                                 $pos = $Host.UI.RawUI.CursorPosition
@@ -9402,7 +9421,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                             } else {
                                                 Write-Host ""
                                             }
-                                            
+
                                             $proceedWithBlindDownload = $false
                                             if ($userInput -and ($userInput.ToLower() -eq 'y' -or $userInput.ToLower() -eq 'yes')) {
                                                 $proceedWithBlindDownload = $true
@@ -9414,7 +9433,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                 $containersToProcess = $containersToProcess | Where-Object { -not ($_.Error -and $_.Error -like "*blind download*") }
                                             }
                                         }
-                                        
+
                                         # Only attempt download if we have containers to process
                                         if ($containersToProcess -and $containersToProcess.Count -gt 0) {
                                             $downloadResult = Get-StorageAccountFiles -StorageAccountName $r.name -StorageAccountKey $detailedStorageInfo.StorageAccountKey -ContainerDetails $containersToProcess -AccountId $script:currentUser -StorageContext $detailedStorageInfo.StorageContext
@@ -9433,21 +9452,21 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                 Errors = @("No containers available - blind download declined or no accessible containers found")
                                             }
                                         }
-                                        
+
                                         # Add download summary to detailed info
                                         $detailedStorageInfo | Add-Member -NotePropertyName "FileDownloadSummary" -NotePropertyValue $downloadResult -Force
-                                        
+
                                         # Display detailed download statistics
                                         Write-Output "    Storage Account Download Results:"
                                         Write-Output "      Total Files Processed: $($downloadResult.TotalFilesProcessed)"
                                         Write-Output "      Successful Downloads: $($downloadResult.SuccessfulDownloads)"
                                         Write-Output "      Failed Downloads: $($downloadResult.FailedDownloads)"
-                                        
+
                                         if ($downloadResult.TotalFilesProcessed -gt 0) {
                                             $successRate = [math]::Round(($downloadResult.SuccessfulDownloads / $downloadResult.TotalFilesProcessed) * 100, 1)
                                             Write-Output "      Success Rate: $successRate%"
                                         }
-                                        
+
                                         # Show blind download statistics if applicable
                                         if ($downloadResult.BlindDownloadAttempts -gt 0) {
                                             Write-Output "      Blind Download Attempts: $($downloadResult.BlindDownloadAttempts)"
@@ -9458,15 +9477,15 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                             }
                                             Write-Output "      Note: Blind downloads attempted common file names when container listing permissions were unavailable"
                                         }
-                                        
+
                                         if ($downloadResult.DownloadFolders -and $downloadResult.DownloadFolders.Count -gt 0) {
                                             Write-Output "      Download Folders Created: $($downloadResult.DownloadFolders.Count)"
                                             Write-Output "      Folder Names: $($downloadResult.DownloadFolders -join ', ')"
                                         }
-                                        
+
                                         if ($downloadResult.Errors -and $downloadResult.Errors.Count -gt 0) {
                                             Write-Output "      Errors Encountered: $($downloadResult.Errors.Count) (see detailed logs for specifics)"
-                                            
+
                                             # Check if errors indicate permission issues and provide guidance
                                             $hasPermissionErrors = $downloadResult.Errors | Where-Object { $_ -match "(permission denied|required permissions|Storage Blob Data|auth-mode.*key)" }
                                             if ($hasPermissionErrors) {
@@ -9480,12 +9499,12 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                                 Write-Output "        4. Use service principal with proper storage permissions"
                                             }
                                         }
-                                        
+
                                     } catch {
                                         Write-Warning "  Failed to download files from Storage Account $($r.name): $($_.Exception.Message)"
                                         $detailedStorageInfo | Add-Member -NotePropertyName "FileDownloadError" -NotePropertyValue $_.Exception.Message -Force
                                     }
-                                    
+
                                     # Combine basic and detailed info
                                     $basicStorageInfo | Add-Member -NotePropertyName "DetailedInfo" -NotePropertyValue $detailedStorageInfo -Force
                                     $storageDetails += $basicStorageInfo
@@ -9505,11 +9524,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         Description = $automationInfo.properties.description
                                         ResourceGroup = ($automationInfo.id -split '/')[4]
                                     }
-                                    
+
                                     # Get comprehensive automation details
                                     Write-Output "  Enumerating detailed automation account information for: $($r.name)"
                                     $detailedAutomationInfo = Get-AutomationAccountDetails -AutomationAccountId $r.id -AutomationAccountName $r.name
-                                    
+
                                     # Combine basic and detailed info
                                     $basicAutomationInfo | Add-Member -NotePropertyName "DetailedInfo" -NotePropertyValue $detailedAutomationInfo -Force
                                     $automationDetails += $basicAutomationInfo
@@ -9532,11 +9551,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         Tags = $cosmosInfo.tags
                                         ResourceGroup = ($cosmosInfo.id -split '/')[4]
                                     }
-                                    
+
                                     # Get comprehensive Cosmos DB details
                                     Write-Output "  Enumerating detailed Cosmos DB information for: $($r.name)"
                                     $detailedCosmosInfo = Get-CosmosDbAccountDetails -CosmosDbAccountId $r.id -AccessToken $accessToken
-                                    
+
                                     # Combine basic and detailed info
                                     $basicCosmosInfo | Add-Member -NotePropertyName "DetailedInfo" -NotePropertyValue $detailedCosmosInfo -Force
                                     $cosmosDetails += $basicCosmosInfo
@@ -9547,7 +9566,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                 $kvInfo = Invoke-ARMRequest -Uri "https://management.azure.com$($r.id)?api-version=2022-07-01"
                                 if ($kvInfo) {
                                     $kvProperties = $kvInfo.properties
-                                    
+
                                     # Get basic Key Vault info
                                     $basicKvInfo = [pscustomobject]@{
                                         Name = $kvInfo.name
@@ -9560,7 +9579,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         VaultUri = $kvProperties.vaultUri
                                         ResourceGroup = ($kvInfo.id -split '/')[4]
                                     }
-                                    
+
                                     # Attempt to retrieve secrets from the Key Vault
                                     try {
                                         Write-Output "  Attempting to retrieve secrets from Key Vault: $($r.name)"
@@ -9569,15 +9588,15 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         if ($Script:SSLBypassEnabled) {
                                             Write-Output "    Note: SSL certificate verification is disabled for this session"
                                         }
-                                        
+
                                         # Store current resource group for ARM API calls
                                         $script:currentResourceGroup = ($kvInfo.id -split '/')[4]
-                                        
+
                                         $secretsInfo = Get-KeyVaultSecrets -KeyVaultName $r.name -VaultUri $kvProperties.vaultUri -SubscriptionId $subscriptionId
-                                        
+
                                         # Add secrets information to basic info
                                         $basicKvInfo | Add-Member -NotePropertyName "SecretsInfo" -NotePropertyValue $secretsInfo -Force
-                                        
+
                                         if ($secretsInfo.Error) {
                                             Write-Warning "    Key Vault access error: $($secretsInfo.Error)"
                                             if ($secretsInfo.DiagnosticInfo) {
@@ -9589,22 +9608,22 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         } elseif ($secretsInfo.Secrets -and $secretsInfo.Secrets.Count -gt 0) {
                                             Write-Output "    SUCCESS: Retrieved information for $($secretsInfo.Secrets.Count) secrets"
                                             Write-Output "    Detection method: $($secretsInfo.Secrets[0].Source)"
-                                            
+
                                             # Show secret summary
                                             $managedSecrets = $secretsInfo.Secrets | Where-Object { $_.SecretType -eq "Managed Secret" }
                                             $userSecrets = $secretsInfo.Secrets | Where-Object { $_.SecretType -eq "User Secret" }
-                                            
+
                                             if ($managedSecrets.Count -gt 0) {
                                                 Write-Output "      - Managed Secrets: $($managedSecrets.Count)"
                                             }
                                             if ($userSecrets.Count -gt 0) {
                                                 Write-Output "      - User Secrets: $($userSecrets.Count)"
                                             }
-                                            
+
                                             # Show names of secrets (first few)
                                             $secretNames = $secretsInfo.Secrets | Select-Object -First 5 | ForEach-Object { $_.Name }
                                             Write-Output "      - Secret Names: $($secretNames -join ', ')$(if ($secretsInfo.Secrets.Count -gt 5) { '...' })"
-                                            
+
                                         } else {
                                             Write-Warning "    No accessible secrets found or insufficient permissions"
                                             Write-Output "    Possible causes:"
@@ -9614,14 +9633,14 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                             Write-Output "      - Network restrictions (firewall/private endpoint)"
                                             Write-Output "    Try manual verification with: az keyvault secret list --vault-name $($r.name)"
                                         }
-                                        
+
                                     } catch {
                                         Write-Warning "  Failed to retrieve secrets from Key Vault $($r.name): $($_.Exception.Message)"
                                         $basicKvInfo | Add-Member -NotePropertyName "SecretsError" -NotePropertyValue $_.Exception.Message -Force
                                     }
-                                    
+
                                     $kvDetails += $basicKvInfo
-                                    
+
                                     # Debug: Show what we just added
                                     Write-Verbose "[KV-DEBUG] Added Key Vault to output: $($basicKvInfo.Name)"
                                     Write-Verbose "[KV-DEBUG] SecretsInfo attached: $($null -ne $basicKvInfo.SecretsInfo)"
@@ -9653,11 +9672,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         ResourceGroup = ($appConfigInfo.id -split '/')[4]
                                         Tags = $appConfigInfo.tags
                                     }
-                                    
+
                                     # Get comprehensive App Configuration details
                                     Write-Output "  Enumerating detailed App Configuration information for: $($r.name)"
                                     $detailedAppConfigInfo = Get-AppConfigurationDetails -AppConfigId $r.id -AppConfigName $r.name -AccessToken $accessToken
-                                    
+
                                     # Combine basic and detailed info
                                     $basicAppConfigInfo | Add-Member -NotePropertyName "DetailedInfo" -NotePropertyValue $detailedAppConfigInfo -Force
                                     $appConfigDetails += $basicAppConfigInfo
@@ -9668,9 +9687,9 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                         Write-Warning "Failed to process resource $($r.name): $($_.Exception.Message)"
                     }
                 }
-                
+
                 Write-Progress -Activity "Processing Resource Details" -Completed
-                
+
                 # Report detailed resource counts
                 Write-Output "Detailed resource enumeration complete:"
                 Write-Output "  Virtual Machines: $($vmDetails.Count)"
@@ -9699,16 +9718,16 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Output "  Blueprint Assignments: $($blueprintEnumeration.BlueprintAssignments.Count)"
                     Write-Output "  Blueprint Artifacts: $($blueprintEnumeration.BlueprintArtifacts.Count)"
                     Write-Output "  Storage Blueprint Files: $($blueprintEnumeration.StorageBlueprintFiles.Count)"
-                    
+
                     # Highlight any blueprint findings
-                    if ($blueprintEnumeration.Summary.TotalBlueprints -gt 0 -or 
-                        $blueprintEnumeration.Summary.TotalAssignments -gt 0 -or 
+                    if ($blueprintEnumeration.Summary.TotalBlueprints -gt 0 -or
+                        $blueprintEnumeration.Summary.TotalAssignments -gt 0 -or
                         $blueprintEnumeration.Summary.TotalStorageFiles -gt 0) {
                         Write-Output ""
                         Write-Host "*** BLUEPRINT FINDINGS DETECTED ***" -ForegroundColor Red -BackgroundColor Yellow
                         Write-Host "Found $($blueprintEnumeration.Summary.TotalBlueprints) blueprints, $($blueprintEnumeration.Summary.TotalAssignments) assignments, and $($blueprintEnumeration.Summary.TotalStorageFiles) storage files" -ForegroundColor Red
                         Write-Output ""
-                        
+
                         # Display blueprint storage files if found
                         if ($blueprintEnumeration.StorageBlueprintFiles.Count -gt 0) {
                             Write-Host "Blueprint Storage Files Found:" -ForegroundColor Red
@@ -9756,7 +9775,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Warning "Failed to retrieve monitoring details: $($_.Exception.Message)"
                 }
             }
-            
+
             # Store detailed resource information in output
             $output.VirtualMachines = $vmDetails
             $output.PublicIPs = $publicIpDetails
@@ -9764,16 +9783,16 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
             $output.WebApps = $webAppDetails
             $output.StorageAccounts = $storageDetails
             $output.KeyVaults = $kvDetails
-            
+
             # Debug: Verify Key Vault assignment
             Write-Verbose "[OUTPUT-DEBUG] Assigned Key Vaults to output object"
-            Write-Verbose "[OUTPUT-DEBUG] kvDetails count: $($kvDetails.Count)"  
+            Write-Verbose "[OUTPUT-DEBUG] kvDetails count: $($kvDetails.Count)"
             Write-Verbose "[OUTPUT-DEBUG] output.KeyVaults count: $($output.KeyVaults.Count)"
             if ($output.KeyVaults -and $output.KeyVaults.Count -gt 0) {
                 Write-Verbose "[OUTPUT-DEBUG] First KV in output: $($output.KeyVaults[0].Name)"
                 Write-Verbose "[OUTPUT-DEBUG] First KV has SecretsInfo: $($null -ne $output.KeyVaults[0].SecretsInfo)"
             }
-            
+
             $output.NetworkSecurityGroups = $nsgDetails
             $output.VirtualNetworks = $vnetDetails
             $output.SqlServers = $sqlServerDetails
@@ -9786,7 +9805,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
             Write-Warning "No accessible Azure subscription found. ARM resource enumeration skipped."
             Write-Output "ARM enumeration skipped - continuing with available data from other sources."
             $output.Warning = "No accessible Azure subscription - ARM enumeration skipped"
-            
+
             # Initialize empty arrays for ARM resources since we can't access them
             $output.Resources = @()
             $output.ResourceGroups = @()
@@ -9805,22 +9824,22 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
             $output.CosmosDbAccounts = @()
             $output.AzureBlueprints = @()
             $output.MonitoringAndLogging = @{}
-            
+
             # Since ARM enumeration failed but we have Graph access, perform enhanced Graph enumeration
             if ($Script:AuthenticationStatus.GraphToken -and $Script:PerformGraphChecks) {
                 Write-Output "`nPerforming enhanced Azure AD enumeration (Graph API only mode - ARM access failed)..."
-                
+
                 try {
                     # Test available Graph API permissions
                     Write-Output "  Testing Graph API permissions and capabilities..."
                     $graphPermissions = Test-GraphApiPermissions
                     $output.GraphApiCapabilities = $graphPermissions
-                    
+
                     Write-Output "    Available Endpoints: $($graphPermissions.AvailableEndpoints -join ', ')"
                     if ($graphPermissions.PermissionErrors.Count -gt 0) {
                         Write-Output "    Restricted Endpoints: $($graphPermissions.PermissionErrors.Count) endpoints require additional permissions"
                     }
-                    
+
                     # Get comprehensive tenant information (if permitted)
                     if ($graphPermissions.CanReadOrganization) {
                         Write-Output "  Retrieving comprehensive tenant details..."
@@ -9832,7 +9851,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                             Write-Output "    Country/Region: $($tenantDetails.CountryLetterCode)"
                         }
                     }
-                    
+
                     # Get directory roles and assignments (if permitted)
                     if ($graphPermissions.CanReadDirectoryRoles) {
                         Write-Output "  Enumerating directory roles and assignments..."
@@ -9843,7 +9862,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                             Write-Output "    Role Assignments: $($directoryRoles.RoleAssignments.Count) assignments"
                         }
                     }
-                    
+
                     # Get all users in the tenant (if permitted)
                     if ($graphPermissions.CanReadUsers) {
                         Write-Output "  Retrieving all tenant users..."
@@ -9855,7 +9874,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                             Write-Output "    Enabled Users: $($allUsers.Analysis.EnabledUsersCount) enabled"
                         }
                     }
-                    
+
                     # Get all groups (if permitted)
                     if ($graphPermissions.CanReadGroups) {
                         Write-Output "  Retrieving all tenant groups..."
@@ -9867,7 +9886,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                             Write-Output "    Distribution Groups: $($allGroups.Analysis.DistributionGroupsCount) distribution groups"
                         }
                     }
-                    
+
                     # Get owned objects first (critical for privilege escalation detection)
                     Write-Output "  Retrieving owned objects..."
                     $ownedObjects = Get-OwnedObjectsViaGraph -AccessToken $AccessTokenGraph
@@ -9875,7 +9894,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                         $output.OwnedObjects = $ownedObjects
                         Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
                         Write-Output "    Breakdown: Apps=$($ownedObjects.Analysis.OwnedApplications), SPs=$($ownedObjects.Analysis.OwnedServicePrincipals), Groups=$($ownedObjects.Analysis.OwnedGroups), Devices=$($ownedObjects.Analysis.OwnedDevices), Others=$($ownedObjects.Analysis.OtherOwnedObjects)"
-                        
+
                         # Show details for owned applications (highest priority for privilege escalation)
                         if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
                             Write-Host "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
@@ -9884,7 +9903,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                 Write-Output "        Application: $($app.displayName) (ID: $($app.id), AppId: $($app.appId))"
                             }
                         }
-                        
+
                         # Show details for owned service principals
                         if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
                             Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
@@ -9892,7 +9911,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                 Write-Output "        Service Principal: $($sp.displayName) (ID: $($sp.id), AppId: $($sp.appId))"
                             }
                         }
-                        
+
                         # Show details for owned groups
                         if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
                             Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
@@ -9900,7 +9919,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                 Write-Output "        Group: $($group.displayName) (ID: $($group.id), Type: $($group.groupTypes -join ', '))"
                             }
                         }
-                        
+
                         # Show details for owned devices
                         if ($ownedObjects.Analysis.OwnedDevices -gt 0) {
                             Write-Output "    Owned Devices: $($ownedObjects.Analysis.OwnedDevices)"
@@ -9908,7 +9927,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                 Write-Output "        Device: $($device.displayName) (ID: $($device.id), OS: $($device.operatingSystem))"
                             }
                         }
-                        
+
                         # Show details for other owned objects
                         if ($ownedObjects.Analysis.OtherOwnedObjects -gt 0) {
                             Write-Output "    Other Owned Objects: $($ownedObjects.Analysis.OtherOwnedObjects)"
@@ -9917,13 +9936,13 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                 Write-Output "        ${objectType}: $($other.displayName) (ID: $($other.id))"
                             }
                         }
-                        
+
                         # Fallback: If no specific categories were shown but we have objects, show all details
-                        if ($ownedObjects.Analysis.TotalOwnedObjects -gt 0 -and 
-                            $ownedObjects.Analysis.OwnedApplications -eq 0 -and 
-                            $ownedObjects.Analysis.OwnedServicePrincipals -eq 0 -and 
-                            $ownedObjects.Analysis.OwnedGroups -eq 0 -and 
-                            $ownedObjects.Analysis.OwnedDevices -eq 0 -and 
+                        if ($ownedObjects.Analysis.TotalOwnedObjects -gt 0 -and
+                            $ownedObjects.Analysis.OwnedApplications -eq 0 -and
+                            $ownedObjects.Analysis.OwnedServicePrincipals -eq 0 -and
+                            $ownedObjects.Analysis.OwnedGroups -eq 0 -and
+                            $ownedObjects.Analysis.OwnedDevices -eq 0 -and
                             $ownedObjects.Analysis.OtherOwnedObjects -eq 0) {
                             Write-Output "    Owned Objects Details (Fallback):"
                             foreach ($obj in $ownedObjects.OwnedObjects) {
@@ -9942,14 +9961,14 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     # Get all applications (if permitted)
                     if ($graphPermissions.CanReadApplications) {
                         Write-Output "  Retrieving all tenant applications..."
-                        
+
                         # Use owned applications for highlighting
                         $ownedApplications = @()
                         if ($ownedObjects -and -not $ownedObjects.Error -and $ownedObjects.Applications) {
                             $ownedApplications = $ownedObjects.Applications
                             Write-Verbose "Found $($ownedApplications.Count) owned applications for highlighting"
                         }
-                        
+
                         $allApplications = Get-TenantApplications -OwnedApplications $ownedApplications
                         if ($allApplications -and -not $allApplications.Error) {
                             $output.TenantApplications = $allApplications
@@ -9958,7 +9977,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                             if ($allApplications.Analysis.ApplicationsWithSecrets -gt 0) {
                                 Write-Output "    Applications with Secrets: $($allApplications.Analysis.ApplicationsWithSecrets)"
                             }
-                            
+
                             # Highlight owned applications
                             $ownedAppsCount = ($allApplications.Applications | Where-Object { $_.IsOwned -eq $true }).Count
                             if ($ownedAppsCount -gt 0) {
@@ -9966,9 +9985,9 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                             }
                         }
                     }
-                    
+
                     Write-Output "Enhanced Azure AD enumeration completed (Graph API scope)"
-                    
+
                 } catch {
                     Write-Warning "Enhanced Graph enumeration failed: $($_.Exception.Message)"
                 }
@@ -9978,12 +9997,12 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
         Write-Warning "Error during Azure resource enumeration: $($_.Exception.Message)"
         Write-Output "ARM enumeration failed, but continuing with available data from other sources..."
         $output.ARMError = $_.Exception.Message
-        
+
         # Ensure we have the basic structure even if ARM enumeration failed completely
         if (-not $output.TenantId) { $output.TenantId = "Unknown" }
         if (-not $output.SubscriptionId) { $output.SubscriptionId = "None" }
         if (-not $output.SubscriptionName) { $output.SubscriptionName = "No Access" }
-        
+
         # Initialize empty arrays for ARM resources since enumeration failed
         if (-not $output.Resources) { $output.Resources = @() }
         if (-not $output.ResourceGroups) { $output.ResourceGroups = @() }
@@ -10001,22 +10020,22 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
 } elseif ($Script:PerformARMChecks) {
     Write-Warning "ARM checks requested but no ARM access token available - skipping Azure resource enumeration"
     $output.Warning = "ARM checks requested but no ARM access token available"
-    
+
     # Enhanced Graph-only enumeration when ARM access is not available
     if ($Script:AuthenticationStatus.GraphToken -and $Script:PerformGraphChecks) {
         Write-Output "`nPerforming enhanced Azure AD enumeration (Graph API only mode)..."
-        
+
         try {
             # Test available Graph API permissions
             Write-Output "  Testing Graph API permissions and capabilities..."
             $graphPermissions = Test-GraphApiPermissions
             $output.GraphApiCapabilities = $graphPermissions
-            
+
             Write-Output "    Available Endpoints: $($graphPermissions.AvailableEndpoints -join ', ')"
             if ($graphPermissions.PermissionErrors.Count -gt 0) {
                 Write-Output "    Restricted Endpoints: $($graphPermissions.PermissionErrors.Count) endpoints require additional permissions"
             }
-            
+
             # Get comprehensive tenant information (if permitted)
             if ($graphPermissions.CanReadOrganization) {
                 Write-Output "  Retrieving comprehensive tenant details..."
@@ -10028,7 +10047,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Output "    Country/Region: $($tenantDetails.CountryLetterCode)"
                 }
             }
-            
+
             # Get directory roles and assignments (if permitted)
             if ($graphPermissions.CanReadDirectoryRoles) {
                 Write-Output "  Enumerating directory roles and assignments..."
@@ -10039,7 +10058,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Output "    Role Assignments: $($directoryRoles.RoleAssignments.Count) assignments"
                 }
             }
-            
+
             # Get all users in the tenant (if permitted)
             if ($graphPermissions.CanReadUsers) {
                 Write-Output "  Retrieving all tenant users..."
@@ -10051,7 +10070,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Output "    Enabled Users: $($allUsers.Analysis.EnabledUsersCount) enabled"
                 }
             }
-            
+
             # Get all groups (if permitted)
             if ($graphPermissions.CanReadGroups) {
                 Write-Output "  Retrieving all tenant groups..."
@@ -10063,11 +10082,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Output "    Distribution Groups: $($allGroups.Analysis.DistributionGroupsCount) distribution groups"
                 }
             }
-            
+
         } catch {
             Write-Warning "Enhanced Graph enumeration failed: $($_.Exception.Message)"
         }
-        
+
         Write-Output "Enhanced Azure AD enumeration completed (limited to Graph API scope)"
     }
 
@@ -10076,18 +10095,18 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
     # ARM checks not requested, but check if we should do Graph-only enumeration
     if ($Script:AuthenticationStatus.GraphToken -and $Script:PerformGraphChecks) {
         Write-Output "`nPerforming enhanced Azure AD enumeration (Graph-only mode)..."
-        
+
         try {
             # Test available Graph API permissions
             Write-Output "  Testing Graph API permissions and capabilities..."
             $graphPermissions = Test-GraphApiPermissions
             $output.GraphApiCapabilities = $graphPermissions
-            
+
             Write-Output "    Available Endpoints: $($graphPermissions.AvailableEndpoints -join ', ')"
             if ($graphPermissions.PermissionErrors.Count -gt 0) {
                 Write-Output "    Restricted Endpoints: $($graphPermissions.PermissionErrors.Count) endpoints require additional permissions"
             }
-            
+
             # Get owned objects first (critical for privilege escalation detection)
             Write-Output "  Retrieving owned objects..."
             $ownedObjects = Get-OwnedObjectsViaGraph -AccessToken $AccessTokenGraph
@@ -10098,7 +10117,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                 if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
                     Write-Host "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
                     Write-Host "        -> You can create new secrets for these applications to authenticate as them!" -ForegroundColor Yellow
-                    
+
                     # Show details for owned applications
                     foreach ($app in $ownedObjects.Applications) {
                         Write-Output "        Application: $($app.displayName) (ID: $($app.id))"
@@ -10109,7 +10128,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                 }
                 if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
                     Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
-                    
+
                     # Show details for owned service principals
                     foreach ($sp in $ownedObjects.ServicePrincipals) {
                         Write-Output "        Service Principal: $($sp.displayName) (ID: $($sp.id))"
@@ -10120,7 +10139,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                 }
                 if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
                     Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
-                    
+
                     # Show details for owned groups
                     foreach ($group in $ownedObjects.Groups) {
                         Write-Output "        Group: $($group.displayName) (ID: $($group.id))"
@@ -10131,7 +10150,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                 }
                 if ($ownedObjects.Analysis.OwnedDevices -gt 0) {
                     Write-Output "    Owned Devices: $($ownedObjects.Analysis.OwnedDevices)"
-                    
+
                     # Show details for owned devices
                     foreach ($device in $ownedObjects.Devices) {
                         Write-Output "        Device: $($device.displayName) (ID: $($device.id))"
@@ -10140,7 +10159,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                         }
                     }
                 }
-                
+
                 # Show details for other owned objects
                 if ($ownedObjects.Analysis.OtherOwnedObjects -gt 0) {
                     Write-Output "    Other Owned Objects: $($ownedObjects.Analysis.OtherOwnedObjects)"
@@ -10156,14 +10175,14 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
             # Get all applications (if permitted)
             if ($graphPermissions.CanReadApplications) {
                 Write-Output "  Retrieving all tenant applications..."
-                
+
                 # Use owned applications for highlighting
                 $ownedApplications = @()
                 if ($ownedObjects -and -not $ownedObjects.Error -and $ownedObjects.Applications) {
                     $ownedApplications = $ownedObjects.Applications
                     Write-Verbose "Found $($ownedApplications.Count) owned applications for highlighting"
                 }
-                
+
                 $allApplications = Get-TenantApplications -OwnedApplications $ownedApplications
                 if ($allApplications -and -not $allApplications.Error) {
                     $output.TenantApplications = $allApplications
@@ -10172,7 +10191,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     if ($allApplications.Analysis.ApplicationsWithSecrets -gt 0) {
                         Write-Output "    Applications with Secrets: $($allApplications.Analysis.ApplicationsWithSecrets)"
                     }
-                    
+
                     # Highlight owned applications
                     $ownedAppsCount = ($allApplications.Applications | Where-Object { $_.IsOwned -eq $true }).Count
                     if ($ownedAppsCount -gt 0) {
@@ -10180,7 +10199,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     }
                 }
             }
-            
+
             # Get all users (if permitted)
             if ($graphPermissions.CanReadUsers) {
                 Write-Output "  Retrieving all tenant users..."
@@ -10193,7 +10212,7 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Output "    Enabled Users: $($allUsers.Analysis.EnabledUsersCount) enabled"
                 }
             }
-            
+
             # Get all groups (if permitted)
             if ($graphPermissions.CanReadGroups) {
                 Write-Output "  Retrieving all tenant groups..."
@@ -10205,9 +10224,9 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Output "    Distribution Groups: $($allGroups.Analysis.DistributionGroupsCount) distribution groups"
                 }
             }
-            
+
             Write-Output "Enhanced Azure AD enumeration completed (Graph API scope)"
-            
+
         } catch {
             Write-Warning "Enhanced Graph enumeration failed: $($_.Exception.Message)"
         }
@@ -10223,18 +10242,18 @@ if ($Script:AuthenticationStatus.AzureCLI) {
     Write-Output $separator
     Write-Output "AZURE CLI ENUMERATION"
     Write-Output $separator
-    
+
     try {
         # Test CLI capabilities
         Write-Output "  Testing Azure CLI capabilities..."
         $cliCapabilities = Test-AzureCLICapabilities
         $output.AzureCLICapabilities = $cliCapabilities
-        
+
         Write-Output "    Available Commands: $($cliCapabilities.AvailableCommands -join ', ')"
         if ($cliCapabilities.CommandErrors.Count -gt 0) {
             Write-Output "    Restricted Commands: $($cliCapabilities.CommandErrors.Count) commands require additional permissions"
         }
-        
+
         # Get tenant details via CLI
         if ($cliCapabilities.CanListTenantDetails) {
             Write-Output "  Retrieving tenant details via CLI..."
@@ -10247,7 +10266,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                 }
             }
         }
-        
+
         # Get users via CLI
         if ($cliCapabilities.CanListUsers) {
             Write-Output "  Retrieving users via CLI..."
@@ -10259,7 +10278,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                 Write-Output "    Guest Users: $($cliUsers.Analysis.GuestUsers) guests"
             }
         }
-        
+
         # Get groups via CLI
         if ($cliCapabilities.CanListGroups) {
             Write-Output "  Retrieving groups via CLI..."
@@ -10270,7 +10289,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                 Write-Output "    Security Groups: $($cliGroups.Analysis.SecurityGroups) security groups"
             }
         }
-        
+
         # Get owned objects via CLI first (crucial for privilege escalation opportunities)
         $ownedObjects = $null
         if ($cliCapabilities.CanListOwnedObjects) {
@@ -10279,7 +10298,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
             if ($ownedObjects -and -not $ownedObjects.Error) {
                 $output.OwnedObjects = $ownedObjects
                 Write-Output "    Owned Objects: $($ownedObjects.Analysis.TotalOwnedObjects) total owned objects"
-                
+
                 # Show details for owned applications (highest priority for privilege escalation)
                 if ($ownedObjects.Analysis.OwnedApplications -gt 0) {
                     Write-Host "    *** PRIVILEGE ESCALATION OPPORTUNITY: $($ownedObjects.Analysis.OwnedApplications) owned applications ***" -ForegroundColor Red
@@ -10288,7 +10307,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                         Write-Output "        Application: $($app.displayName) (ID: $($app.id), AppId: $($app.appId))"
                     }
                 }
-                
+
                 # Show details for owned service principals
                 if ($ownedObjects.Analysis.OwnedServicePrincipals -gt 0) {
                     Write-Output "    Owned Service Principals: $($ownedObjects.Analysis.OwnedServicePrincipals)"
@@ -10296,7 +10315,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                         Write-Output "        Service Principal: $($sp.displayName) (ID: $($sp.id), AppId: $($sp.appId))"
                     }
                 }
-                
+
                 # Show details for owned groups
                 if ($ownedObjects.Analysis.OwnedGroups -gt 0) {
                     Write-Output "    Owned Groups: $($ownedObjects.Analysis.OwnedGroups)"
@@ -10304,7 +10323,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                         Write-Output "        Group: $($group.displayName) (ID: $($group.id), Type: $($group.groupTypes -join ', '))"
                     }
                 }
-                
+
                 # Show details for owned devices
                 if ($ownedObjects.Analysis.OwnedDevices -gt 0) {
                     Write-Output "    Owned Devices: $($ownedObjects.Analysis.OwnedDevices)"
@@ -10312,7 +10331,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                         Write-Output "        Device: $($device.displayName) (ID: $($device.id), OS: $($device.operatingSystem))"
                     }
                 }
-                
+
                 # Show details for other owned objects
                 if ($ownedObjects.Analysis.OtherOwnedObjects -gt 0) {
                     Write-Output "    Other Owned Objects: $($ownedObjects.Analysis.OtherOwnedObjects)"
@@ -10323,7 +10342,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                 }
             }
         }
-        
+
         # Get applications via CLI (with ownership highlighting)
         if ($cliCapabilities.CanListApps) {
             Write-Output "  Retrieving applications via CLI..."
@@ -10339,7 +10358,7 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                 }
             }
         }
-        
+
         # Get role assignments via CLI
         if ($cliCapabilities.CanListRoles) {
             Write-Output "  Retrieving role assignments via CLI..."
@@ -10351,11 +10370,11 @@ if ($Script:AuthenticationStatus.AzureCLI) {
                 Write-Output "    Unique Principals: $($cliRoles.Analysis.UniquePrincipals) unique principals"
             }
         }
-        
+
     } catch {
         Write-Warning "Azure CLI enumeration failed: $($_.Exception.Message)"
     }
-    
+
     Write-Output "Azure CLI enumeration completed"
     Write-Output ("=" * 60)
 }
@@ -10398,13 +10417,13 @@ try {
         Write-Output "Exporting consolidated data to JSON format..."
         $jsonOutput = $output | ConvertTo-Json -Depth 15
         $jsonOutput | Out-File -FilePath $OutputFile -Encoding UTF8 -Force
-        
+
         $fileSizeKB = [math]::Round((Get-Item $OutputFile).Length / 1KB, 2)
         Write-Output "Successfully exported to: $OutputFile ($fileSizeKB KB)"
-        
+
     } elseif ($OutputFormat -eq "csv") {
         Write-Output "Exporting data to CSV format..."
-        
+
         $categories = @(
             @{Name="Resources"; Data=$output.Resources},
             @{Name="ResourceGroups"; Data=$output.ResourceGroups},
@@ -10422,10 +10441,10 @@ try {
             @{Name="AzureBlueprints"; Data=$output.AzureBlueprints},
             @{Name="SubscriptionRoleAssignments"; Data=$output.SubscriptionRoleAssignments}
         )
-        
+
         $baseFileName = [System.IO.Path]::GetFileNameWithoutExtension($OutputFile)
         $exportedFiles = @()
-        
+
         foreach ($category in $categories) {
             if ($category.Data -and $category.Data.Count -gt 0) {
                 $csvFileName = "${baseFileName}_$($category.Name).csv"
@@ -10440,28 +10459,28 @@ try {
                 Write-Output "  $($category.Name): No data to export"
             }
         }
-        
+
         # Create summary file
         $summaryFileName = "${baseFileName}_Summary.csv"
         $output.Summary.GetEnumerator() | ForEach-Object { [PSCustomObject]@{Category=$_.Key; Count=$_.Value} } | Export-Csv -Path $summaryFileName -NoTypeInformation -Encoding UTF8 -Force
         $exportedFiles += $summaryFileName
-        
+
         Write-Output "`nExported $($exportedFiles.Count) CSV files"
     }
-    
+
     # Enhanced Display Output
     try {
         # Display header with subscription info
         Show-EnumerationHeader -SubscriptionName $output.SubscriptionName -SubscriptionId $output.SubscriptionId -TenantId $output.TenantId -AuthMethod $output.AuthenticationMethod
-        
+
         # Display quick statistics
         Show-QuickStats -Summary $output.Summary
-        
+
         # Display role assignments with detailed principal information
         if ($output.SubscriptionRoleAssignments -and $output.SubscriptionRoleAssignments.Count -gt 0) {
             Show-RoleAssignmentsSummary -RoleAssignments $output.SubscriptionRoleAssignments -Title "SUBSCRIPTION-LEVEL ROLE ASSIGNMENTS"
         }
-        
+
         # Display resource group role assignments if any found
         if ($output.ResourceGroups) {
             $allRgRoles = @()
@@ -10479,12 +10498,12 @@ try {
                     }
                 }
             }
-            
+
             if ($allRgRoles.Count -gt 0) {
                 Show-RoleAssignmentsSummary -RoleAssignments $allRgRoles -Title "RESOURCE GROUP-LEVEL ROLE ASSIGNMENTS"
             }
         }
-        
+
         # Display resources summary with detailed tables
         Write-Verbose "`n[MAIN] About to call Show-ResourcesSummary..."
         Write-Verbose "[MAIN] Key Vaults in output: $(if ($output.KeyVaults) { $output.KeyVaults.Count } else { 'null/missing' })"
@@ -10498,10 +10517,10 @@ try {
             }
         }
         Show-ResourcesSummary -Resources $output
-        
+
         # Display security highlights and recommendations
         Show-SecurityHighlights -Resources $output
-        
+
         # Display detailed owned applications information
         if ($output.TenantApplications -and $output.TenantApplications.Applications) {
             $ownedApps = $output.TenantApplications.Applications | Where-Object { $_.IsOwned -eq $true }
@@ -10514,7 +10533,7 @@ try {
                 Show-OwnedApplicationsDetails -Applications $output.CLIApplications.Applications
             }
         }
-        
+
         # Footer
         $separator = "=" * 80
         Write-Host ""
@@ -10522,17 +10541,17 @@ try {
         Write-Host " ENUMERATION COMPLETED SUCCESSFULLY" -ForegroundColor Green
         Write-Host " Complete JSON output saved: $OutputFile" -ForegroundColor Gray
         Write-Host $separator -ForegroundColor Cyan
-        
+
     } catch {
         Write-Warning "Enhanced display failed, falling back to basic summary: $($_.Exception.Message)"
-        
+
         # Fallback to original simple display
         Write-Output "`nEnumeration Summary:"
         $output.Summary.GetEnumerator() | ForEach-Object {
             Write-Output "  $($_.Key): $($_.Value)"
         }
     }
-    
+
 } catch {
     Write-Error "Failed to generate output file(s): $($_.Exception.Message)"
     exit 1
