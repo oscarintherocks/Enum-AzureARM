@@ -3375,8 +3375,12 @@ function Get-StorageAccountDetails {
                     $tokenParts = $Script:StorageToken.Split('.')
                     if ($tokenParts.Count -ge 2) {
                         $payload = $tokenParts[1]
-                        # Add padding if needed for Base64 decoding
-                        while ($payload.Length % 4) { $payload += "=" }
+                        # Convert URL-safe Base64 to standard Base64 and add padding if needed
+                        $payload = $payload.Replace('-', '+').Replace('_', '/')
+                        $paddingNeeded = 4 - ($payload.Length % 4)
+                        if ($paddingNeeded -ne 4 -and $paddingNeeded -ne 0) {
+                            $payload += "=" * $paddingNeeded
+                        }
                         $tokenBytes = [Convert]::FromBase64String($payload)
                         $tokenJson = [System.Text.Encoding]::UTF8.GetString($tokenBytes)
                         $tokenData = $tokenJson | ConvertFrom-Json
@@ -7845,7 +7849,7 @@ function Initialize-Authentication {
 
                     # Add padding if needed for base64 decoding
                     $paddingNeeded = 4 - ($payload.Length % 4)
-                    if ($paddingNeeded -ne 4) {
+                    if ($paddingNeeded -ne 4 -and $paddingNeeded -ne 0) {
                         $payload += "=" * $paddingNeeded
                     }
 
@@ -7853,10 +7857,22 @@ function Initialize-Authentication {
                         $payloadBytes = [System.Convert]::FromBase64String($payload)
                         $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
                     } catch {
-                        # Fallback: try without padding (some JWT implementations vary)
-                        $originalPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
-                        $payloadBytes = [System.Convert]::FromBase64String($originalPayload)
-                        $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                        # Fallback: try original payload without URL-safe conversion and padding
+                        try {
+                            $originalPayload = $tokenParts[1]
+                            # Add padding to original if needed
+                            $origPaddingNeeded = 4 - ($originalPayload.Length % 4)
+                            if ($origPaddingNeeded -ne 4 -and $origPaddingNeeded -ne 0) {
+                                $originalPayload += "=" * $origPaddingNeeded
+                            }
+                            $payloadBytes = [System.Convert]::FromBase64String($originalPayload)
+                            $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                        } catch {
+                            # Final fallback: try URL-safe conversion without padding
+                            $noPaddingPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                            $payloadBytes = [System.Convert]::FromBase64String($noPaddingPayload)
+                            $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                        }
                     }
                     $claims = $decodedPayload | ConvertFrom-Json
 
@@ -7920,7 +7936,7 @@ function Initialize-Authentication {
                     
                     # Add padding if needed for base64 decoding
                     $paddingNeeded = 4 - ($payload.Length % 4)
-                    if ($paddingNeeded -ne 4) {
+                    if ($paddingNeeded -ne 4 -and $paddingNeeded -ne 0) {
                         $payload += "=" * $paddingNeeded
                     }
 
@@ -7928,10 +7944,22 @@ function Initialize-Authentication {
                         $payloadBytes = [System.Convert]::FromBase64String($payload)
                         $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
                     } catch {
-                        # Fallback: try without padding (some JWT implementations vary)
-                        $originalPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
-                        $payloadBytes = [System.Convert]::FromBase64String($originalPayload)
-                        $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                        # Fallback: try original payload without URL-safe conversion and padding
+                        try {
+                            $originalPayload = $tokenParts[1]
+                            # Add padding to original if needed
+                            $origPaddingNeeded = 4 - ($originalPayload.Length % 4)
+                            if ($origPaddingNeeded -ne 4 -and $origPaddingNeeded -ne 0) {
+                                $originalPayload += "=" * $origPaddingNeeded
+                            }
+                            $payloadBytes = [System.Convert]::FromBase64String($originalPayload)
+                            $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                        } catch {
+                            # Final fallback: try URL-safe conversion without padding
+                            $noPaddingPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                            $payloadBytes = [System.Convert]::FromBase64String($noPaddingPayload)
+                            $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                        }
                     }
                     $claims = $decodedPayload | ConvertFrom-Json
                 } catch {
@@ -8661,7 +8689,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                             
                             # Add padding if needed for base64 decoding
                             $paddingNeeded = 4 - ($payload.Length % 4)
-                            if ($paddingNeeded -ne 4) {
+                            if ($paddingNeeded -ne 4 -and $paddingNeeded -ne 0) {
                                 $payload += "=" * $paddingNeeded
                             }
 
@@ -8669,10 +8697,22 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                                 $payloadBytes = [System.Convert]::FromBase64String($payload)
                                 $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
                             } catch {
-                                # Fallback: try without padding
-                                $originalPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
-                                $payloadBytes = [System.Convert]::FromBase64String($originalPayload)
-                                $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                                # Fallback: try original payload without URL-safe conversion and padding
+                                try {
+                                    $originalPayload = $tokenParts[1]
+                                    # Add padding to original if needed
+                                    $origPaddingNeeded = 4 - ($originalPayload.Length % 4)
+                                    if ($origPaddingNeeded -ne 4 -and $origPaddingNeeded -ne 0) {
+                                        $originalPayload += "=" * $origPaddingNeeded
+                                    }
+                                    $payloadBytes = [System.Convert]::FromBase64String($originalPayload)
+                                    $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                                } catch {
+                                    # Final fallback: try URL-safe conversion without padding
+                                    $noPaddingPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                                    $payloadBytes = [System.Convert]::FromBase64String($noPaddingPayload)
+                                    $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                                }
                             }
                             $tokenClaims = $decodedPayload | ConvertFrom-Json
                         } catch {
@@ -8967,11 +9007,11 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                 # Try to extract tenant ID from ARM token
                 $tokenParts = $AccessTokenARM.Split('.')
                 if ($tokenParts.Length -ge 2) {
-                    # Decode the payload (with padding fix)
-                    $payload = $tokenParts[1]
+                    # Decode the payload (with proper URL-safe Base64 handling)
+                    $payload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
                     $payloadLength = $payload.Length
                     $paddingNeeded = 4 - ($payloadLength % 4)
-                    if ($paddingNeeded -ne 4) {
+                    if ($paddingNeeded -ne 4 -and $paddingNeeded -ne 0) {
                         $payload += "=" * $paddingNeeded
                     }
                     $decodedBytes = [System.Convert]::FromBase64String($payload)
@@ -9003,7 +9043,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                     $payload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
                     $payloadLength = $payload.Length
                     $paddingNeeded = 4 - ($payloadLength % 4)
-                    if ($paddingNeeded -ne 4) {
+                    if ($paddingNeeded -ne 4 -and $paddingNeeded -ne 0) {
                         $payload += "=" * $paddingNeeded
                     }
                     
@@ -9011,10 +9051,22 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         $decodedBytes = [System.Convert]::FromBase64String($payload)
                         $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
                     } catch {
-                        # Fallback: try without padding
-                        $originalPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
-                        $decodedBytes = [System.Convert]::FromBase64String($originalPayload)
-                        $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
+                        # Fallback: try original payload without URL-safe conversion and padding
+                        try {
+                            $originalPayload = $tokenParts[1]
+                            # Add padding to original if needed
+                            $origPaddingNeeded = 4 - ($originalPayload.Length % 4)
+                            if ($origPaddingNeeded -ne 4 -and $origPaddingNeeded -ne 0) {
+                                $originalPayload += "=" * $origPaddingNeeded
+                            }
+                            $decodedBytes = [System.Convert]::FromBase64String($originalPayload)
+                            $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
+                        } catch {
+                            # Final fallback: try URL-safe conversion without padding
+                            $noPaddingPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                            $decodedBytes = [System.Convert]::FromBase64String($noPaddingPayload)
+                            $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
+                        }
                     }
                     $claims = $decodedJson | ConvertFrom-Json
 
@@ -9051,10 +9103,10 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
         try {
             $tokenParts = $AccessTokenARM.Split('.')
             if ($tokenParts.Length -ge 2) {
-                $payload = $tokenParts[1]
+                $payload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
                 $payloadLength = $payload.Length
                 $paddingNeeded = 4 - ($payloadLength % 4)
-                if ($paddingNeeded -ne 4) {
+                if ($paddingNeeded -ne 4 -and $paddingNeeded -ne 0) {
                     $payload += "=" * $paddingNeeded
                 }
                 $decodedBytes = [System.Convert]::FromBase64String($payload)
@@ -9136,11 +9188,11 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
             try {
                 $tokenParts = $AccessTokenARM.Split('.')
                 if ($tokenParts.Length -ge 2) {
-                    # Decode the payload (with padding fix)
-                    $payload = $tokenParts[1]
+                    # Decode the payload (with proper URL-safe Base64 handling)
+                    $payload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
                     $payloadLength = $payload.Length
                     $paddingNeeded = 4 - ($payloadLength % 4)
-                    if ($paddingNeeded -ne 4) {
+                    if ($paddingNeeded -ne 4 -and $paddingNeeded -ne 0) {
                         $payload += "=" * $paddingNeeded
                     }
                     $decodedBytes = [System.Convert]::FromBase64String($payload)
