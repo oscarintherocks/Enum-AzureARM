@@ -8753,8 +8753,57 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         try {
                             $photoResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/photo" -Headers $headers -Method GET
                             if ($photoResponse) {
-                                Write-Output "  User photo metadata accessible"
+                                Write-Output "  User photo metadata accessible -> Downloading photo..."
                                 $output.UserDetails | Add-Member -NotePropertyName "HasPhoto" -NotePropertyValue $true -Force
+                                
+                                # Download the actual photo
+                                try {
+                                    $photoData = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/photo/`$value" -Headers $headers -Method GET
+                                    
+                                    # Determine AccountId for filename
+                                    $accountIdForFile = if ($AccountId) { 
+                                        $AccountId 
+                                    } elseif ($output.UserDetails -and $output.UserDetails.userPrincipalName) { 
+                                        $output.UserDetails.userPrincipalName 
+                                    } elseif ($output.UserDetails -and $output.UserDetails.displayName) {
+                                        $output.UserDetails.displayName.Replace(' ', '_')
+                                    } else { 
+                                        "unknown_user" 
+                                    }
+                                    
+                                    # Clean filename (remove invalid characters)
+                                    $cleanAccountId = $accountIdForFile -replace '[<>:"/\\|?*]', '_'
+                                    
+                                    # Create Results folder if it doesn't exist
+                                    $resultsFolder = Join-Path (Get-Location) "Results"
+                                    if (-not (Test-Path $resultsFolder)) {
+                                        New-Item -ItemType Directory -Path $resultsFolder -Force | Out-Null
+                                    }
+                                    
+                                    # Determine file extension from content type (default to jpg)
+                                    $fileExtension = "jpg"
+                                    if ($photoResponse.'@odata.mediaContentType') {
+                                        $contentType = $photoResponse.'@odata.mediaContentType'
+                                        if ($contentType -match 'jpeg|jpg') { $fileExtension = "jpg" }
+                                        elseif ($contentType -match 'png') { $fileExtension = "png" }
+                                        elseif ($contentType -match 'gif') { $fileExtension = "gif" }
+                                        elseif ($contentType -match 'bmp') { $fileExtension = "bmp" }
+                                    }
+                                    
+                                    $photoFilename = "photo_$cleanAccountId.$fileExtension"
+                                    $photoPath = Join-Path $resultsFolder $photoFilename
+                                    
+                                    # Save photo data to file
+                                    [System.IO.File]::WriteAllBytes($photoPath, $photoData)
+                                    
+                                    Write-Output "    ✅ User photo downloaded: $photoPath"
+                                    $output.UserDetails | Add-Member -NotePropertyName "PhotoPath" -NotePropertyValue $photoPath -Force
+                                    $output.UserDetails | Add-Member -NotePropertyName "PhotoSize" -NotePropertyValue $photoData.Length -Force
+                                    
+                                } catch {
+                                    Write-Output "    ⚠️ Photo metadata accessible but download failed: $($_.Exception.Message)"
+                                    Write-Verbose "Photo download error details: $($_.Exception)"
+                                }
                             }
                         } catch {
                             Write-Verbose "  User photo not accessible: $($_.Exception.Message)"
