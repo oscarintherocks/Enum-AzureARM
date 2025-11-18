@@ -287,9 +287,8 @@ function Test-AuthenticationParameters {
 
     # Validate required parameters for different scenarios
     if (-not [string]::IsNullOrWhiteSpace($AccessTokenARM)) {
-        if ([string]::IsNullOrWhiteSpace($AccountId)) {
-            throw "AccountId parameter is required when using AccessTokenARM. Please provide a valid Account ID (UPN or Object ID).`n`nExample:`n  .\Enum-AzureARM.ps1 -AccessTokenARM `"your-token`" -AccountId `"user@example.com`""
-        }
+        # AccountId validation will be done after auto-extraction attempt from Graph token
+        # This allows the script to work with just ARM token if Graph token is also provided
     }
 
     # Validate tokens are not just whitespace if provided
@@ -312,6 +311,59 @@ function Test-AuthenticationParameters {
     # Validate OutputFile is not null or empty
     if ([string]::IsNullOrWhiteSpace($OutputFile)) {
         throw "OutputFile parameter cannot be null or empty."
+    }
+
+    # Auto-extract AccountId from Graph token if not provided
+    if ([string]::IsNullOrWhiteSpace($AccountId) -and -not [string]::IsNullOrWhiteSpace($AccessTokenGraph)) {
+        try {
+            Write-Verbose "Attempting to extract AccountId from Graph token..."
+            
+            # Parse JWT token to extract user information
+            $tokenParts = $AccessTokenGraph.Split('.')
+            if ($tokenParts.Length -ge 2) {
+                # Convert URL-safe Base64 to standard Base64 and decode
+                $payload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                $paddingNeeded = 4 - ($payload.Length % 4)
+                if ($paddingNeeded -ne 4 -and $paddingNeeded -ne 0) {
+                    $payload += "=" * $paddingNeeded
+                }
+                
+                try {
+                    $payloadBytes = [System.Convert]::FromBase64String($payload)
+                    $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                    $claims = $decodedPayload | ConvertFrom-Json
+                    
+                    # Extract AccountId from token claims (prefer UPN, then unique_name, then preferred_username)
+                    $extractedAccountId = $null
+                    if ($claims.upn) {
+                        $extractedAccountId = $claims.upn
+                    } elseif ($claims.unique_name) {
+                        $extractedAccountId = $claims.unique_name
+                    } elseif ($claims.preferred_username) {
+                        $extractedAccountId = $claims.preferred_username
+                    } elseif ($claims.email) {
+                        $extractedAccountId = $claims.email
+                    }
+                    
+                    if ($extractedAccountId) {
+                        $AccountId = $extractedAccountId
+                        Write-Host "✅ AccountId automatically extracted from Graph token: $AccountId" -ForegroundColor Green
+                    } else {
+                        Write-Verbose "Could not extract AccountId from Graph token - no suitable claim found (upn, unique_name, preferred_username, email)"
+                    }
+                    
+                } catch {
+                    Write-Verbose "Failed to decode Graph token for AccountId extraction: $($_.Exception.Message)"
+                }
+            }
+        } catch {
+            Write-Verbose "Could not extract AccountId from Graph token: $($_.Exception.Message)"
+        }
+    }
+
+    # Final validation: AccountId is required for ARM token operations (after auto-extraction attempt)
+    if (-not [string]::IsNullOrWhiteSpace($AccessTokenARM) -and [string]::IsNullOrWhiteSpace($AccountId)) {
+        throw "AccountId parameter is required when using AccessTokenARM and could not be auto-extracted from Graph token. Please provide a valid Account ID (UPN or Object ID).`n`nExample:`n  .\Enum-AzureARM.ps1 -AccessTokenARM `"your-token`" -AccountId `"user@example.com`"`n  OR provide both tokens: .\Enum-AzureARM.ps1 -AccessTokenARM `"arm-token`" -AccessTokenGraph `"graph-token`""
     }
 
     # Determine what checks will be performed
@@ -8758,7 +8810,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                                 
                                 # Download the actual photo
                                 try {
-                                    $photoData = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/photo/`$value" -Headers $headers -Method GET
+                                    $photoData = Invoke-WebRequest -Uri "https://graph.microsoft.com/v1.0/me/photo/`$value" -Headers $headers -Method GET
                                     
                                     # Determine AccountId for filename
                                     $accountIdForFile = if ($AccountId) { 
@@ -8794,11 +8846,11 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                                     $photoPath = Join-Path $resultsFolder $photoFilename
                                     
                                     # Save photo data to file
-                                    [System.IO.File]::WriteAllBytes($photoPath, $photoData)
+                                    [System.IO.File]::WriteAllBytes($photoPath, $photoData.Content)
                                     
                                     Write-Output "    ✅ User photo downloaded: $photoPath"
                                     $output.UserDetails | Add-Member -NotePropertyName "PhotoPath" -NotePropertyValue $photoPath -Force
-                                    $output.UserDetails | Add-Member -NotePropertyName "PhotoSize" -NotePropertyValue $photoData.Length -Force
+                                    $output.UserDetails | Add-Member -NotePropertyName "PhotoSize" -NotePropertyValue $photoData.Content.Length -Force
                                     
                                 } catch {
                                     Write-Output "    ⚠️ Photo metadata accessible but download failed: $($_.Exception.Message)"
