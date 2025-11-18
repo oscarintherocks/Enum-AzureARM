@@ -349,6 +349,42 @@ function Test-AuthenticationParameters {
                         $AccountId = $extractedAccountId
                         Write-Host "✅ AccountId automatically extracted from Graph token: $AccountId" -ForegroundColor Green
                         Write-Verbose "AccountId variable set to: '$AccountId' (type: $($AccountId.GetType().Name))"
+                        
+                        # Show additional token details for verification
+                        Write-Verbose "Token claims analysis:"
+                        if ($claims.upn) { Write-Verbose "  UPN: $($claims.upn)" }
+                        if ($claims.unique_name) { Write-Verbose "  Unique Name: $($claims.unique_name)" }
+                        if ($claims.preferred_username) { Write-Verbose "  Preferred Username: $($claims.preferred_username)" }
+                        if ($claims.email) { Write-Verbose "  Email: $($claims.email)" }
+                        if ($claims.name) { Write-Verbose "  Display Name: $($claims.name)" }
+                        Write-Host "🔍 Token belongs to: $AccountId" -ForegroundColor Cyan
+                        Write-Host "📝 All output files will use this AccountId in their names" -ForegroundColor DarkCyan
+                        
+                        # Update dynamic filename if using default and AccountId was extracted
+                        # Check if filename contains wrong account identifier from cached Azure context
+                        $currentFilename = Split-Path $OutputFile -Leaf
+                        Write-Verbose "Current output filename: $currentFilename"
+                        Write-Verbose "Extracted AccountId: $AccountId"
+                        
+                        if ($OutputFile -eq "Results\AzureResourcesOutput.json" -or 
+                            $OutputFile -like "*pending*" -or 
+                            $OutputFile -like "*unknown*" -or
+                            $OutputFile -like "*pending_graph_extraction*" -or
+                            ($currentFilename -notlike "*$($AccountId.Split('@')[0])*" -and $currentFilename -like "*_*_AzureResources.json")) {
+                            
+                            $timestamp = Get-Date -Format "yyyyMMddHHmmss"
+                            $sanitizedAccountId = $AccountId -replace '[\\/:*?"<>|]', '_'
+                            $newFilename = "${sanitizedAccountId}_${timestamp}_AzureResources.json"
+                            $oldOutputFile = $OutputFile
+                            $OutputFile = Join-Path "Results" $newFilename
+                            Write-Verbose "Updated output filename with extracted AccountId: $OutputFile"
+                            Write-Host "🔄 Correcting output filename from cached context to extracted AccountId" -ForegroundColor Yellow
+                            Write-Host "   Old: $(Split-Path $oldOutputFile -Leaf)" -ForegroundColor DarkGray
+                            Write-Host "   New: $(Split-Path $OutputFile -Leaf)" -ForegroundColor DarkCyan
+                            Write-Host "📄 Output file will use extracted AccountId: $(Split-Path $OutputFile -Leaf)" -ForegroundColor DarkCyan
+                        } else {
+                            Write-Verbose "Output filename already matches extracted AccountId or is custom"
+                        }
                     } else {
                         Write-Verbose "Could not extract AccountId from Graph token - no suitable claim found (upn, unique_name, preferred_username, email)"
                     }
@@ -548,22 +584,33 @@ if ($OutputFile -eq "Results\AzureResourcesOutput.json") {
         $accountIdentifier = $AccountId -replace '[\\/:*?"<>|]', '_'  # Sanitize filename
     } else {
         try {
-            # Try to get from current Azure context
-            $context = Get-AzContext -ErrorAction SilentlyContinue
-            if ($context -and $context.Account.Id) {
-                $accountIdentifier = $context.Account.Id -replace '[\\/:*?"<>|]', '_'
-            } elseif ($Script:PerformGraphChecks) {
-                # Will be updated later when Graph user details are retrieved
-                $accountIdentifier = "pending"
+            # If Graph token provided, defer to later extraction (don't use cached context)
+            if (-not [string]::IsNullOrWhiteSpace($AccessTokenGraph)) {
+                $accountIdentifier = "pending_graph_extraction"
+                Write-Verbose "Graph token detected - will extract AccountId later and update filename"
+            } else {
+                # Try to get from current Azure context only if no Graph token
+                $context = Get-AzContext -ErrorAction SilentlyContinue
+                if ($context -and $context.Account.Id) {
+                    $accountIdentifier = $context.Account.Id -replace '[\\/:*?"<>|]', '_'
+                    Write-Verbose "Using AccountId from Azure PowerShell context: $($context.Account.Id)"
+                } else {
+                    $accountIdentifier = "unknown"
+                }
             }
         } catch {
             Write-Verbose "Could not determine account identifier: $($_.Exception.Message)"
+            $accountIdentifier = "unknown"
         }
     }
 
     $filename = "${accountIdentifier}_${timestamp}_AzureResources.json"
     $OutputFile = Join-Path "Results" $filename
     Write-Verbose "Generated dynamic filename: $OutputFile"
+    
+    if ($accountIdentifier -eq "pending_graph_extraction") {
+        Write-Host "📋 Initial filename (will be updated after Graph token processing): $(Split-Path $OutputFile -Leaf)" -ForegroundColor DarkGray
+    }
 }
 
 # Ensure Results directory exists
@@ -5512,6 +5559,71 @@ function Get-AppConfigurationDetails {
     }
 }
 
+function Invoke-GraphRequestWithRetry {
+    <#
+    .SYNOPSIS
+        Invokes Graph API request with automatic retry logic for rate limiting (HTTP 429)
+    .PARAMETER Uri
+        The URI to request
+    .PARAMETER Headers
+        Optional headers dictionary
+    .PARAMETER MaxRetries
+        Maximum number of retries (default: 3)
+    .PARAMETER BaseDelay
+        Base delay in seconds between retries (default: 1)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Headers,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$MaxRetries = 3,
+        
+        [Parameter(Mandatory = $false)]
+        [int]$BaseDelay = 1
+    )
+    
+    for ($attempt = 1; $attempt -le ($MaxRetries + 1); $attempt++) {
+        try {
+            if ($Headers) {
+                return Invoke-RestMethod -Uri $Uri -Headers $Headers -Method GET
+            } else {
+                return Invoke-GraphRequest -Uri $Uri
+            }
+        } catch {
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            } elseif ($_.Exception.Message -match "429|Too Many Requests") {
+                $statusCode = 429
+            }
+            
+            if ($statusCode -eq 429 -and $attempt -le $MaxRetries) {
+                # Extract Retry-After header if available
+                $retryAfter = 1
+                if ($_.Exception.Response.Headers["Retry-After"]) {
+                    $retryAfter = [int]$_.Exception.Response.Headers["Retry-After"]
+                }
+                
+                # Use exponential backoff with jitter, but respect Retry-After if provided
+                $delay = [Math]::Max($retryAfter, $BaseDelay * [Math]::Pow(2, ($attempt - 1)))
+                $jitter = Get-Random -Minimum 0.1 -Maximum 0.5
+                $finalDelay = [Math]::Min($delay + $jitter, 60) # Cap at 60 seconds
+                
+                Write-Warning "Rate limited (HTTP 429). Waiting $([Math]::Round($finalDelay, 1)) seconds before retry $attempt/$MaxRetries..."
+                Start-Sleep -Seconds $finalDelay
+            } else {
+                # Re-throw the exception if it's not a rate limit or we've exceeded retries
+                throw
+            }
+        }
+    }
+}
+
 function Get-ApplicationDetails {
     <#
     .SYNOPSIS
@@ -5561,9 +5673,9 @@ function Get-ApplicationDetails {
                 'Authorization' = "Bearer $AccessTokenGraph"
                 'Content-Type' = 'application/json'
             }
-            $application = Invoke-RestMethod -Uri $appUrl -Headers $headers -Method GET
+            $application = Invoke-GraphRequestWithRetry -Uri $appUrl -Headers $headers
         } else {
-            $application = Invoke-GraphRequest -Uri $appUrl
+            $application = Invoke-GraphRequestWithRetry -Uri $appUrl
         }
 
         if ($application) {
@@ -5724,9 +5836,9 @@ function Get-ApplicationDetails {
             $ownersUrl = "https://graph.microsoft.com/v1.0/applications/$ApplicationId/owners"
 
             if ($AccessTokenGraph) {
-                $owners = Invoke-RestMethod -Uri $ownersUrl -Headers $headers -Method GET
+                $owners = Invoke-GraphRequestWithRetry -Uri $ownersUrl -Headers $headers
             } else {
-                $owners = Invoke-GraphRequest -Uri $ownersUrl
+                $owners = Invoke-GraphRequestWithRetry -Uri $ownersUrl
             }
 
             if ($owners -and $owners.value) {
@@ -5749,9 +5861,9 @@ function Get-ApplicationDetails {
             $spUrl = "https://graph.microsoft.com/v1.0/servicePrincipals" + "?`$filter=appId eq '$($application.appId)'"
 
             if ($AccessTokenGraph) {
-                $servicePrincipal = Invoke-RestMethod -Uri $spUrl -Headers $headers -Method GET
+                $servicePrincipal = Invoke-GraphRequestWithRetry -Uri $spUrl -Headers $headers
             } else {
-                $servicePrincipal = Invoke-GraphRequest -Uri $spUrl
+                $servicePrincipal = Invoke-GraphRequestWithRetry -Uri $spUrl
             }
 
             if ($servicePrincipal -and $servicePrincipal.value -and $servicePrincipal.value.Count -gt 0) {
@@ -5779,9 +5891,9 @@ function Get-ApplicationDetails {
                     $spOwnersUrl = "https://graph.microsoft.com/v1.0/servicePrincipals/$($sp.id)/owners"
 
                     if ($AccessTokenGraph) {
-                        $spOwners = Invoke-RestMethod -Uri $spOwnersUrl -Headers $headers -Method GET
+                        $spOwners = Invoke-GraphRequestWithRetry -Uri $spOwnersUrl -Headers $headers
                     } else {
-                        $spOwners = Invoke-GraphRequest -Uri $spOwnersUrl
+                        $spOwners = Invoke-GraphRequestWithRetry -Uri $spOwnersUrl
                     }
 
                     if ($spOwners -and $spOwners.value) {
@@ -8878,23 +8990,32 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
 
                         # Try to get current user's photo/profile picture
                         try {
+                            Write-Verbose "Photo download: Current AccountId variable value before photo download: '$AccountId'"
                             $photoResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/photo" -Headers $headers -Method GET
                             if ($photoResponse) {
                                 Write-Output "  User photo metadata accessible -> Downloading photo..."
+                                Write-Output "  📸 Using AccountId for filename: $AccountId"
                                 $output.UserDetails | Add-Member -NotePropertyName "HasPhoto" -NotePropertyValue $true -Force
                                 
                                 # Download the actual photo
                                 try {
                                     $photoData = Invoke-WebRequest -Uri "https://graph.microsoft.com/v1.0/me/photo/`$value" -Headers $headers -Method GET
                                     
-                                    # Determine AccountId for filename
-                                    $accountIdForFile = if ($AccountId) { 
+                                    # Determine AccountId for filename - prioritize extracted AccountId
+                                    Write-Verbose "Photo download: AccountId variable value: '$AccountId'"
+                                    Write-Verbose "Photo download: UserDetails.userPrincipalName: '$($output.UserDetails.userPrincipalName)'"
+                                    
+                                    $accountIdForFile = if (-not [string]::IsNullOrWhiteSpace($AccountId)) { 
+                                        Write-Verbose "Using AccountId variable for photo filename: $AccountId"
                                         $AccountId 
-                                    } elseif ($output.UserDetails -and $output.UserDetails.userPrincipalName) { 
+                                    } elseif ($output.UserDetails -and -not [string]::IsNullOrWhiteSpace($output.UserDetails.userPrincipalName)) { 
+                                        Write-Verbose "Using UserDetails.userPrincipalName for photo filename: $($output.UserDetails.userPrincipalName)"
                                         $output.UserDetails.userPrincipalName 
-                                    } elseif ($output.UserDetails -and $output.UserDetails.displayName) {
+                                    } elseif ($output.UserDetails -and -not [string]::IsNullOrWhiteSpace($output.UserDetails.displayName)) {
+                                        Write-Verbose "Using UserDetails.displayName for photo filename: $($output.UserDetails.displayName)"
                                         $output.UserDetails.displayName.Replace(' ', '_')
                                     } else { 
+                                        Write-Verbose "No suitable AccountId found, using fallback: unknown_user"
                                         "unknown_user" 
                                     }
                                     
@@ -9091,9 +9212,9 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                         'Authorization' = "Bearer $AccessTokenGraph"
                         'Content-Type' = 'application/json'
                     }
-                    $applications = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/applications?`$top=100" -Headers $headers -Method GET
+                    $applications = Invoke-GraphRequestWithRetry -Uri "https://graph.microsoft.com/v1.0/applications?`$top=100" -Headers $headers
                 } else {
-                    $applications = Invoke-GraphRequest -Uri "https://graph.microsoft.com/v1.0/applications?`$top=100"
+                    $applications = Invoke-GraphRequestWithRetry -Uri "https://graph.microsoft.com/v1.0/applications?`$top=100"
                 }
 
                 if ($applications -and $applications.value) {
@@ -9102,6 +9223,10 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                     $output.Applications = @()
                     $appCount = 0
 
+                    $batchSize = 5
+                    $delayBetweenBatches = 2000  # 2 seconds
+                    $delayBetweenRequests = 200  # 200ms
+                    
                     foreach ($app in $applications.value) {
                         $appCount++
                         Write-Progress -Activity "Processing Applications" -Status "Processing application: $($app.displayName) ($appCount/$($applications.value.Count))" -PercentComplete (($appCount / $applications.value.Count) * 100)
@@ -9110,8 +9235,23 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                             Write-Debug "Getting detailed information for application: $($app.displayName) (ID: $($app.id))"
                             $detailedAppInfo = Get-ApplicationDetails -ApplicationId $app.id -AccessTokenGraph $AccessTokenGraph
                             $output.Applications += $detailedAppInfo
+                            
+                            # Intelligent rate limiting based on batch processing
+                            if ($appCount % $batchSize -eq 0) {
+                                Write-Verbose "Processed batch of $batchSize applications ($appCount/$($applications.value.Count)). Pausing for $($delayBetweenBatches/1000) seconds to respect rate limits..."
+                                Start-Sleep -Milliseconds $delayBetweenBatches
+                            } else {
+                                # Small delay between individual requests
+                                Start-Sleep -Milliseconds $delayBetweenRequests
+                            }
                         } catch {
-                            Write-Warning "Failed to get detailed info for application $($app.displayName): $($_.Exception.Message)"
+                            $errorMessage = $_.Exception.Message
+                            if ($errorMessage -like "*429*" -or $errorMessage -like "*Too Many Requests*") {
+                                Write-Warning "Rate limit encountered for application $($app.displayName). This should be handled by the retry mechanism."
+                            } else {
+                                Write-Warning "Failed to get detailed info for application $($app.displayName): $errorMessage"
+                            }
+                            
                             # Fall back to basic info if detailed retrieval fails
                             $output.Applications += @{
                                 Id = $app.id
@@ -9119,7 +9259,7 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                                 DisplayName = $app.displayName
                                 PublisherDomain = $app.publisherDomain
                                 CreatedDateTime = $app.createdDateTime
-                                Error = "Failed to retrieve detailed info: $($_.Exception.Message)"
+                                Error = "Failed to retrieve detailed info: $errorMessage"
                             }
                         }
                     }
