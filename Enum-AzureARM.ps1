@@ -348,6 +348,7 @@ function Test-AuthenticationParameters {
                     if ($extractedAccountId) {
                         $AccountId = $extractedAccountId
                         Write-Host "✅ AccountId automatically extracted from Graph token: $AccountId" -ForegroundColor Green
+                        Write-Verbose "AccountId variable set to: '$AccountId' (type: $($AccountId.GetType().Name))"
                     } else {
                         Write-Verbose "Could not extract AccountId from Graph token - no suitable claim found (upn, unique_name, preferred_username, email)"
                     }
@@ -3414,9 +3415,14 @@ function Get-StorageAccountDetails {
         Write-Debug "Enumerating storage account details for: $StorageAccountName"
         Write-Host "  🔍 Starting detailed enumeration of storage account: $StorageAccountName" -ForegroundColor Cyan
         
+        # Initialize user choice variables for this storage account
+        $Script:UserConfirmedBlobEnumeration = $false
+        $Script:SkipBlobEnumeration = $false
+        
         # Inform user about Storage token benefits if not provided
         if (-not ($Script:StorageToken -and $Script:AuthenticationStatus.StorageToken)) {
-            Write-Host "    💡 Tip: Use -AccessTokenStorage for enhanced blob enumeration with OAuth authentication" -ForegroundColor DarkCyan
+            Write-Host "    💡 Interactive blob enumeration mode (will prompt for permission)" -ForegroundColor DarkCyan
+            Write-Host "    🔑 For automatic blob enumeration: az account get-access-token --resource=https://storage.azure.com/" -ForegroundColor DarkCyan
         } else {
             # Test Storage OAuth token validity and provide detailed diagnostics
             try {
@@ -3562,20 +3568,62 @@ function Get-StorageAccountDetails {
                         Error = $null
                     }
 
-                    # Check if we have any method available for blob enumeration
+                    # Check if we should attempt blob enumeration - prioritize Storage token for performance
                     $hasStorageToken = ($Script:StorageToken -and $Script:AuthenticationStatus.StorageToken)
-                    $hasStorageKey = ($storageAccountKey -and $storageAccountKey -ne "")
-                    $hasAzureCLI = (Get-Command az -ErrorAction SilentlyContinue)
-                    $hasAzModule = (Get-Module -ListAvailable -Name Az.Storage)
-
-                    if (-not $hasStorageToken -and -not $hasStorageKey -and -not $hasAzureCLI -and -not $hasAzModule) {
-                        # No blob enumeration methods available - inform user
-                        Write-Host "      ℹ️  Blob enumeration skipped - requires Storage token, account key, Azure CLI, or Az.Storage module" -ForegroundColor DarkYellow
-                        $containerDetail.Blobs = @("Blob enumeration requires: -AccessTokenStorage parameter, Storage Account Key access, Azure CLI authentication, or Az.Storage PowerShell module")
-                        $containerDetail.BlobCount = "Unknown - authentication required"
-                        $containerDetail.Error = "No blob enumeration method available"
-                        $storageDetails.Containers += $containerDetail
-                        continue
+                    
+                    if (-not $hasStorageToken) {
+                        # Ask user if they want to proceed without Storage token (only ask once per storage account)
+                        if (-not $Script:UserConfirmedBlobEnumeration) {
+                            Write-Host ""
+                            Write-Host "    ⚠️  No Storage token detected - blob enumeration success probability is low" -ForegroundColor Yellow
+                            Write-Host "    💡 Blob enumeration may fail without -AccessTokenStorage parameter" -ForegroundColor DarkYellow
+                            Write-Host "    🔑 For best results, obtain Storage token: az account get-access-token --resource=https://storage.azure.com/" -ForegroundColor DarkCyan
+                            Write-Host ""
+                            
+                            $confirmation = $null
+                            $timeoutSeconds = 10
+                            Write-Host "    ❓ Proceed with blob enumeration anyway? (Success not guaranteed)" -ForegroundColor Cyan
+                            Write-Host "       Default: No (timeout: ${timeoutSeconds}s) [y/N]: " -NoNewline -ForegroundColor Gray
+                            
+                            # Timeout logic for user input
+                            $inputJob = Start-Job -ScriptBlock {
+                                Read-Host
+                            }
+                            
+                            if (Wait-Job $inputJob -Timeout $timeoutSeconds) {
+                                $confirmation = Receive-Job $inputJob
+                                Remove-Job $inputJob
+                            } else {
+                                Remove-Job $inputJob -Force
+                                Write-Host "No" -ForegroundColor Gray
+                                Write-Host "    ⏱️  Timeout reached. Using default: No" -ForegroundColor DarkGray
+                                $confirmation = ""
+                            }
+                            
+                            if ($confirmation -match '^[Yy]([Ee][Ss])?$') {
+                                Write-Host "    ✅ User chose to proceed with blob enumeration" -ForegroundColor Green
+                                $Script:UserConfirmedBlobEnumeration = $true
+                                $Script:SkipBlobEnumeration = $false
+                            } else {
+                                Write-Host "    ✅ User chose to skip blob enumeration for better performance" -ForegroundColor Green  
+                                $Script:UserConfirmedBlobEnumeration = $true
+                                $Script:SkipBlobEnumeration = $true
+                            }
+                        }
+                        
+                        if ($Script:SkipBlobEnumeration) {
+                            # User chose to skip blob enumeration
+                            Write-Host "      ℹ️  Container listed (blob enumeration skipped by user choice)" -ForegroundColor DarkGreen
+                            $containerDetail.Blobs = @()  # Empty array - no blobs enumerated by choice
+                            $containerDetail.BlobCount = "Skipped by user choice"
+                            $containerDetail.Error = $null  # This is not an error, just user preference  
+                            $containerDetail.UserSkipped = $true  # Flag to distinguish from failed enumeration
+                            $storageDetails.Containers += $containerDetail
+                            continue
+                        }
+                        
+                        # User chose to proceed - continue with blob enumeration attempts
+                        Write-Host "      ⚠️  Attempting blob enumeration without Storage token..." -ForegroundColor Yellow
                     }
 
                     # Try multiple approaches to enumerate blobs
@@ -3912,12 +3960,28 @@ function Get-StorageAccountDetails {
                     $storageDetails.Containers += $containerDetail
                 }
 
-                # Provide summary information if no Storage token was used
+                # Provide summary information based on enumeration method used
                 if (-not ($Script:StorageToken -and $Script:AuthenticationStatus.StorageToken)) {
-                    $containersWithoutBlobs = $storageDetails.Containers | Where-Object { $_.Error -eq "No blob enumeration method available" }
-                    if ($containersWithoutBlobs -and $containersWithoutBlobs.Count -gt 0) {
-                        Write-Host "    📋 Summary: $($containersWithoutBlobs.Count) containers listed without blob enumeration" -ForegroundColor Yellow
-                        Write-Host "    💡 Use -AccessTokenStorage '<storage_token>' for complete blob enumeration" -ForegroundColor DarkCyan
+                    $containersListed = $storageDetails.Containers.Count
+                    $skippedContainers = ($storageDetails.Containers | Where-Object { $_.UserSkipped }).Count
+                    $enumeratedContainers = $containersListed - $skippedContainers
+                    
+                    if ($containersListed -gt 0) {
+                        if ($skippedContainers -gt 0) {
+                            Write-Host "    ✅ Mixed enumeration complete: $enumeratedContainers containers enumerated, $skippedContainers skipped by choice" -ForegroundColor Green
+                        } else {
+                            Write-Host "    ✅ Enumeration complete: $containersListed containers processed" -ForegroundColor Green
+                        }
+                        if ($skippedContainers -gt 0) {
+                            Write-Host "    💡 For complete enumeration, use: -AccessTokenStorage '<storage_token>'" -ForegroundColor DarkCyan
+                        }
+                    }
+                } else {
+                    # With Storage token, provide blob enumeration summary
+                    $containersWithBlobs = $storageDetails.Containers | Where-Object { $_.BlobCount -is [int] -and $_.BlobCount -gt 0 }
+                    $totalBlobs = ($storageDetails.Containers | Where-Object { $_.BlobCount -is [int] } | Measure-Object -Property BlobCount -Sum).Sum
+                    if ($totalBlobs -gt 0) {
+                        Write-Host "    ✅ Enhanced enumeration complete: $($containersWithBlobs.Count) containers with $totalBlobs total blobs" -ForegroundColor Green
                     }
                 }
             } else {
@@ -8366,23 +8430,34 @@ function Initialize-Authentication {
             $Script:AuthenticationStatus.ARMToken = $true
             Write-Verbose "ARM token provided"
 
-            # Try to connect Az context with token
-            try {
-                if ($AccessTokenGraph -and $Script:PerformGraphChecks) {
-                    Connect-AzAccount -AccessToken $AccessTokenARM -MicrosoftGraphAccessToken $AccessTokenGraph -AccountId $AccountId -ErrorAction Stop | Out-Null
-                    $Script:AuthenticationStatus.AzContext = $true
-                    $Script:AuthenticationStatus.GraphContext = $true
-                    $Script:AuthenticationStatus.GraphToken = $true
-                    Write-Verbose "Connected with both ARM and Graph tokens"
-                } else {
-                    Connect-AzAccount -AccessToken $AccessTokenARM -AccountId $AccountId -ErrorAction Stop | Out-Null
-                    $Script:AuthenticationStatus.AzContext = $true
-                    Write-Verbose "Connected with ARM token only"
+            # Ensure AccountId is available before connecting
+            if ([string]::IsNullOrWhiteSpace($AccountId)) {
+                Write-Verbose "AccountId is empty (value: '$AccountId'), skipping Az context establishment but will continue with direct API calls"
+                Write-Verbose "This is normal when using Graph-only authentication or when AccountId extraction from tokens failed."
+                Write-Verbose "Direct API calls will be used instead of Azure PowerShell context."
+            } else {
+                Write-Verbose "Using AccountId for Az context: '$AccountId'"
+
+                # Try to connect Az context with token
+                try {
+                    Write-Verbose "About to call Connect-AzAccount with AccountId: '$AccountId' (IsNull: $([string]::IsNullOrWhiteSpace($AccountId)))"
+                    if ($AccessTokenGraph -and $Script:PerformGraphChecks) {
+                        Connect-AzAccount -AccessToken $AccessTokenARM -MicrosoftGraphAccessToken $AccessTokenGraph -AccountId $AccountId -ErrorAction Stop | Out-Null
+                        $Script:AuthenticationStatus.AzContext = $true
+                        $Script:AuthenticationStatus.GraphContext = $true
+                        $Script:AuthenticationStatus.GraphToken = $true
+                        Write-Verbose "Connected with both ARM and Graph tokens"
+                    } else {
+                        Connect-AzAccount -AccessToken $AccessTokenARM -AccountId $AccountId -ErrorAction Stop | Out-Null
+                        $Script:AuthenticationStatus.AzContext = $true
+                        Write-Verbose "Connected with ARM token only"
+                    }
+                } catch {
+                    Write-Verbose "Az context establishment failed (this is not critical): $($_.Exception.Message)"
+                    Write-Verbose "Continuing with direct API calls - this is the preferred method for token-based authentication"
+                    # Even if Az context fails, we can still use the token for direct API calls
+                    # This is actually more reliable than Az context for many scenarios
                 }
-            } catch {
-                Write-Warning "Failed to establish Az context with provided tokens: $($_.Exception.Message)"
-                # Even if Az context fails, we can still use the token for direct API calls
-                Write-Verbose "Will attempt direct ARM API calls with provided token"
             }
         }
 
@@ -10051,6 +10126,12 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                                         # First, process any existing containers
                                         if ($detailedStorageInfo.Containers -and $detailedStorageInfo.Containers.Count -gt 0) {
                                             foreach ($container in $detailedStorageInfo.Containers) {
+                                                # Skip containers where user chose not to enumerate blobs
+                                                if ($container.UserSkipped) {
+                                                    Write-Debug "Skipping container '$($container.name)' - user chose not to enumerate blobs"
+                                                    continue
+                                                }
+                                                
                                                 # Check if blob enumeration failed (blobs are error messages)
                                                 if ($container.Blobs -and $container.Blobs.Count -gt 0 -and $container.Blobs[0] -is [string]) {
                                                     Write-Output "    Container '$($container.name)' found but blob enumeration failed - enabling blind download"
