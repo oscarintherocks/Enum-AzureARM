@@ -52,6 +52,8 @@ This magnificent beast of a script will enumerate Azure resources faster than yo
 - 💾 **Enhanced blob downloads** with OAuth-based enumeration, smart diagnostics, and 5-tier authentication system
 - 🔍 **Smart Storage enumeration** - lists containers even without Storage tokens, provides helpful guidance for blob access
 - 🛠️ **Advanced token diagnostics** - JWT analysis, scope validation, and comprehensive troubleshooting guidance
+- 🤖 **Automatic AccountId extraction** - extracts user identity from Graph tokens automatically (upn → unique_name → preferred_username → email)
+- 📸 **User photo download** - automatically detects and downloads user profile photos with proper naming convention
 - 👥 **Maps role assignments** like a social network stalker (with principal name resolution)
 - 📊 **Generates beautiful reports** that will make your boss think you're a wizard
 - 🎭 **Multiple authentication methods** including **advanced service principal support**
@@ -141,8 +143,8 @@ The crown jewel of authentication methods. When you have service principal crede
 When you already have tokens from other sources. **The script automatically extracts tenant ID from JWT token claims and proceeds directly with enumeration - no subscription prompts!**
 
 ```powershell
-# ARM + Graph tokens (full access) - uses first subscription  
-.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccountId $userId
+# ARM + Graph tokens (full access) - AccountId auto-extracted from Graph token
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken
 
 # Enhanced enumeration with Storage and Key Vault tokens 🆕
 .\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenStorage $storageToken -AccessTokenKeyVault $kvToken -AccountId $userId
@@ -150,7 +152,7 @@ When you already have tokens from other sources. **The script automatically extr
 # Interactive subscription selection with tokens
 .\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccountId $userId -ForceSubscriptionSelection
 
-# Just Graph enumeration
+# Just Graph enumeration (AccountId auto-extracted, photos auto-downloaded)
 .\Enum-AzureARM.ps1 -AccessTokenGraph $graphToken -GraphOnly
 
 # Just ARM enumeration with Storage enhancement
@@ -273,7 +275,7 @@ $kvToken = (az account get-access-token --resource=https://vault.azure.net/ | Co
 When Azure PowerShell is available:
 
 ```powershell
-# Get ARM token from current Azure PowerShell context
+# Get Graph token from current Azure PowerShell context
 $context = Get-AzContext
 $armToken = $context.TokenCache.ReadItems() | Where-Object { $_.Resource -eq "https://management.azure.com/" } | Select-Object -First 1 -ExpandProperty AccessToken
 
@@ -281,8 +283,8 @@ $armToken = $context.TokenCache.ReadItems() | Where-Object { $_.Resource -eq "ht
 $armToken = (Get-AzAccessToken).Token
 $graphToken = (Get-AzAccessToken -ResourceTypeName MSGraph).Token
 
-# Use extracted tokens
-.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccountId (Get-AzContext).Account.Id
+# Use extracted tokens (AccountId automatically extracted from Graph token)
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken
 ```
 
 ### 🎭 **Managed Identity Exploitation** 🔥 **[CTF FAVORITE]**
@@ -370,8 +372,8 @@ Write-Host "UPN: $($claims.upn)"
 $armToken = (az account get-access-token --resource=https://management.azure.com/ | ConvertFrom-Json).accessToken
 $graphToken = (az account get-access-token --resource=https://graph.microsoft.com --output json | ConvertFrom-Json).accessToken
 
-# Maximum enumeration
-.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccountId "dev@company.com" -Verbose
+# Maximum enumeration (AccountId auto-extracted, photos auto-downloaded)
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -Verbose
 ```
 
 #### **Scenario 2: Compromised Web Application with Managed Identity**
@@ -391,8 +393,8 @@ echo $TOKENS > /tmp/arm_token.json
 $foundArmToken = "eyJ0eXAiOiJKV1QiLCJhbGc..."
 $foundGraphToken = "eyJ0eXAiOiJKV1QiLCJhbGc..."
 
-# Direct enumeration - no subscription prompts!
-.\Enum-AzureARM.ps1 -AccessTokenARM $foundArmToken -AccessTokenGraph $foundGraphToken -AccountId "service@target.com"
+# Direct enumeration - no subscription prompts! AccountId auto-extracted from Graph token
+.\Enum-AzureARM.ps1 -AccessTokenARM $foundArmToken -AccessTokenGraph $foundGraphToken
 ```
 
 ### ⚠️ **Token Security Notes**
@@ -447,10 +449,11 @@ New parameter for Graph-only enumeration when ARM access isn't available:
 .\Enum-AzureARM.ps1 -UseCurrentUser -AllowNoSubscription
 
 # Perfect for scenarios where:
-# ✅ You only need Azure AD enumeration
+# ✅ You only need Azure AD enumeration (includes photo downloads!)
 # ✅ ARM subscription access is denied
 # ✅ You want to avoid test/demo subscriptions
 # ✅ Compliance requirements restrict ARM access
+# ✅ Automatic AccountId extraction works with Graph-only mode
 ```
 
 ### ⚡ **Smart Timeout Handling**
@@ -497,6 +500,25 @@ When trying to download storage blobs, the script tries multiple methods:
 3. **🟢 Azure CLI OAuth + Keys** - Combines OAuth with key-based access
 4. **🟠 Resource-Specific Token** - Uses `https://storage.azure.com/` token
 5. **🔴 ARM Token Fallback** - Falls back to ARM management token
+
+#### **📸 Automatic User Photo Download** 🆕 **NEW!**
+
+When using Graph tokens, the script automatically:
+
+- **Detects user profile photos** from Microsoft Graph API
+- **Downloads photos automatically** to the Results folder
+- **Proper naming convention**: `photo_AccountId.jpg` (e.g., `photo_user@company.com.jpg`)
+- **Binary data handling** - ensures downloaded images are valid and uncorrupted
+- **Graceful fallback** - continues enumeration if photo download fails
+
+#### **🤖 Automatic AccountId Extraction** 🆕 **NEW!**
+
+No more manual AccountId specification with Graph tokens! The script automatically extracts user identity from JWT token claims:
+
+- **Priority order**: `upn` → `unique_name` → `preferred_username` → `email`
+- **Seamless experience** - just provide the Graph token, AccountId is handled automatically
+- **Fallback support** - can still manually specify AccountId if needed
+- **Works with all Graph token types** - user tokens, service principal tokens, managed identity tokens
 
 #### **📋 Smart Error Handling & Guidance**
 
@@ -562,6 +584,8 @@ $kvToken = (az account get-access-token --resource=https://vault.azure.net/ | Co
 # ✅ Cross-method verification for maximum data retrieval
 # ✅ Role assignments and permissions analysis
 # ✅ Azure AD user/group enumeration
+# ✅ Automatic user photo download (when Graph token available)
+# ✅ AccountId auto-extraction from Graph tokens
 # ✅ Detailed troubleshooting guidance and next steps
 ```
 
@@ -725,6 +749,8 @@ Want to make these scripts even better? Here's how not to mess things up:
 - **⚡ Cross-Method Verification** - validates OAuth results with alternative authentication methods when available
 - **🎯 Comprehensive Progress Tracking** - detailed progress indicators for storage account processing
 - **💡 Intelligent User Guidance** - proactive tips and troubleshooting suggestions throughout enumeration
+- **🤖 Automatic AccountId Extraction** - extracts user identity from Graph tokens automatically (no manual specification needed)
+- **📸 User Photo Download** - automatically detects and downloads user profile photos with proper naming and binary handling
 
 ### Version 2.3 - "The Token Subscription Selection Update"
 
@@ -789,12 +815,12 @@ For more details read the [LICENSE](LICENSE) file
 | **Current User** | `.\Enum-AzureARM.ps1 -UseCurrentUser` | ✅ **Interactive** | Already logged in with Az/CLI |
 | **🚀 CTF/Red Team** | `.\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId '<ID>' -ClientSecret '<SECRET>' -TenantId '<TENANT>'` | ❌ **No Prompts** | **Maximum capabilities + auto tokens** |
 | **Standard Automation** | `.\Enum-AzureARM.ps1 -ServicePrincipalId '<ID>' -ServicePrincipalSecret '<SECRET>' -TenantId '<TENANT>'` | ❌ **No Prompts** | Azure CLI backend |
-| **🎯 Token ARM+Graph** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<TOKEN>' -AccessTokenGraph '<TOKEN>' -AccountId '<ID>'` | ❌ **No Prompts** | Have tokens from exploitation |
+| **🎯 Token ARM+Graph** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<TOKEN>' -AccessTokenGraph '<TOKEN>'` | ❌ **No Prompts** | **AccountId auto-extracted + photos downloaded** |
 | **🆕 Token Full Suite** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<ARM>' -AccessTokenStorage '<STORAGE>' -AccessTokenKeyVault '<KV>' -AccountId '<ID>'` | ❌ **No Prompts** | **Maximum capabilities with all tokens** |
 | **🎮 Token + Selection** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<TOKEN>' -AccessTokenGraph '<TOKEN>' -AccountId '<ID>' -ForceSubscriptionSelection` | ✅ **Interactive** | Choose subscription with tokens |  
 | **Token ARM + Storage** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<TOKEN>' -AccessTokenStorage '<STORAGE>' -AccountId '<ID>'` | ❌ **No Prompts** | Enhanced storage enumeration |
 | **Token Graph + KV** | `.\Enum-AzureARM.ps1 -AccessTokenGraph '<TOKEN>' -AccessTokenKeyVault '<KV>'` | ❌ **No Prompts** | Enhanced Key Vault access |
-| **Graph Only** | `.\Enum-AzureARM.ps1 -AccessTokenGraph '<TOKEN>' -GraphOnly` | ❌ **No Prompts** | Azure AD enumeration only |
+| **Graph Only** | `.\Enum-AzureARM.ps1 -AccessTokenGraph '<TOKEN>' -GraphOnly` | ❌ **No Prompts** | **Azure AD enumeration + photos downloaded** |
 | **⭐ No Subscription** | `.\Enum-AzureARM.ps1 -UseCurrentUser -AllowNoSubscription` | ✅ **Interactive** | **Graph-only + smart subscription handling** |
 
 ### 🎫 **Quick Token Acquisition**
