@@ -34,6 +34,11 @@
     - Enhanced blob download with 5-tier authentication system
     - Cross-resource enumeration capabilities
     - No interactive authentication required (perfect for automation/CTF scenarios)
+    
+    Token Authentication:
+    - Support for individual Storage and Key Vault tokens via -AccessTokenStorage and -AccessTokenKeyVault
+    - Enhanced enumeration when combined with ARM/Graph tokens
+    - Improved access to storage blobs and key vault secrets with dedicated resource tokens
 
 .PARAMETER UseServicePrincipal
     Enables Azure PowerShell service principal authentication mode with enhanced token capabilities
@@ -49,6 +54,16 @@
     Service principal secret for Azure CLI authentication
 .PARAMETER TenantId
     Azure Active Directory tenant ID (required for service principal authentication)
+.PARAMETER AccessTokenARM
+    Azure Resource Manager access token for ARM API operations
+.PARAMETER AccessTokenGraph
+    Microsoft Graph access token for Graph API operations
+.PARAMETER AccessTokenStorage
+    Azure Storage access token (scope: https://storage.azure.com/) for enhanced blob enumeration and storage operations
+.PARAMETER AccessTokenKeyVault
+    Azure Key Vault access token (scope: https://vault.azure.net/) for enhanced key vault secret and key enumeration
+.PARAMETER AccountId
+    Account identifier for token-based authentication (required when using ARM tokens)
 .NOTES
     Version: 2.0 | Outputs to Results\ folder | Dynamic filenames based on account identity
     Enhanced service principal support with automatic resource-specific token management
@@ -61,6 +76,12 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$AccessTokenGraph,
+
+    [Parameter(Mandatory=$false)]
+    [string]$AccessTokenStorage,
+
+    [Parameter(Mandatory=$false)]
+    [string]$AccessTokenKeyVault,
 
     [Parameter(Mandatory=$false)]
     [string]$AccountId,
@@ -111,7 +132,11 @@ param(
 
     # Allow running without subscription access
     [Parameter(Mandatory=$false)]
-    [switch]$AllowNoSubscription
+    [switch]$AllowNoSubscription,
+
+    # Force interactive subscription selection even when using tokens
+    [Parameter(Mandatory=$false)]
+    [switch]$ForceSubscriptionSelection
 )
 
 # Error action preference for better error handling
@@ -123,6 +148,8 @@ $Script:AuthenticationStatus = @{
     GraphContext = $false
     ARMToken = $false
     GraphToken = $false
+    StorageToken = $false
+    KeyVaultToken = $false
     AzureCLI = $false
 }
 
@@ -153,6 +180,9 @@ if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessT
     Write-Host "     .\Enum-AzureARM.ps1 -AccessTokenARM <token> -AccountId <id>"
     Write-Host "     .\Enum-AzureARM.ps1 -AccessTokenGraph <token>"
     Write-Host "     .\Enum-AzureARM.ps1 -AccessTokenARM <arm> -AccessTokenGraph <graph> -AccountId <id>"
+    Write-Host "     # Enhanced enumeration with Storage and Key Vault tokens:" -ForegroundColor Gray
+    Write-Host "     .\Enum-AzureARM.ps1 -AccessTokenARM <arm> -AccessTokenStorage <storage> -AccountId <id>"
+    Write-Host "     .\Enum-AzureARM.ps1 -AccessTokenGraph <graph> -AccessTokenKeyVault <keyvault>"
     Write-Host ""
     Write-Host "  3. Azure CLI Service Principal (standard automation):" -ForegroundColor Cyan
     Write-Host "     .\Enum-AzureARM.ps1 -UseAzureCLI -ServicePrincipalId <appid> -ServicePrincipalSecret <secret> -TenantId <tenantid>"
@@ -171,6 +201,9 @@ if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessT
     Write-Host "  -GraphOnly                 (Skip ARM enumeration, use Graph token only)"
     Write-Host "  -NoInteractiveAuth         (Disable interactive authentication helpers)"
     Write-Host "  -AllowNoSubscription       (Allow Graph-only enumeration when no subscription access)"
+    Write-Host "  -ForceSubscriptionSelection (Enable subscription selection even with tokens/service principals)"
+    Write-Host "  -AccessTokenStorage <token> (Storage OAuth token for enhanced blob enumeration)"
+    Write-Host "  -AccessTokenKeyVault <token> (Key Vault OAuth token for enhanced secret access)"
     Write-Host "  -Verbose                   (Show detailed operation progress)"
     Write-Host "  -Help                      (Show this message)`n"
 
@@ -180,19 +213,26 @@ if ($Help -or (-not $UseCurrentUser -and -not $AccessTokenARM -and -not $AccessT
     Write-Host "  .\Enum-AzureARM.ps1 -UseCurrentUser -Verbose" -ForegroundColor Green
     Write-Host ""
     Write-Host "  CTF/Red Team: Enhanced service principal enumeration (recommended):" -ForegroundColor White
-    Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal \" -ForegroundColor Green
-    Write-Host "                       -ApplicationId '12345678-1234-1234-1234-123456789abc' \" -ForegroundColor Green
-    Write-Host "                       -ClientSecret 'ABC123XyZ456DefGhi789JklMno012PqrStu' \" -ForegroundColor Green
+    Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal " -ForegroundColor Green
+    Write-Host "                       -ApplicationId '12345678-1234-1234-1234-123456789abc' " -ForegroundColor Green
+    Write-Host "                       -ClientSecret 'ABC123XyZ456DefGhi789JklMno012PqrStu' " -ForegroundColor Green
     Write-Host "                       -TenantId '87654321-4321-4321-4321-cba987654321'" -ForegroundColor Green
     Write-Host "  # Automatically gets Storage + Key Vault tokens for blob downloads" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  Standard service principal with Azure CLI:" -ForegroundColor White
-    Write-Host "  .\Enum-AzureARM.ps1 -ServicePrincipalId '12345678-1234-1234-1234-123456789abc' \" -ForegroundColor Green
-    Write-Host "                       -ServicePrincipalSecret 'ABC123XyZ456DefGhi789JklMno012PqrStu' \" -ForegroundColor Green
+    Write-Host "  .\Enum-AzureARM.ps1 -ServicePrincipalId '12345678-1234-1234-1234-123456789abc' " -ForegroundColor Green
+    Write-Host "                       -ServicePrincipalSecret 'ABC123XyZ456DefGhi789JklMno012PqrStu' " -ForegroundColor Green
     Write-Host "                       -TenantId '87654321-4321-4321-4321-cba987654321'" -ForegroundColor Green
     Write-Host ""
     Write-Host "  Graph-only enumeration with existing token:" -ForegroundColor White
     Write-Host "  .\Enum-AzureARM.ps1 -AccessTokenGraph '<graph_token>' -GraphOnly" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Enhanced enumeration with Storage and Key Vault tokens:" -ForegroundColor White
+    Write-Host "  .\Enum-AzureARM.ps1 -AccessTokenARM '<arm_token>' " -ForegroundColor Green
+    Write-Host "                       -AccessTokenStorage '<storage_token>' " -ForegroundColor Green
+    Write-Host "                       -AccessTokenKeyVault '<keyvault_token>' " -ForegroundColor Green
+    Write-Host "                       -AccountId 'user@example.com'" -ForegroundColor Green
+    Write-Host "  # Without Storage token: containers listed, but blob enumeration requires authentication" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  Custom output and format:" -ForegroundColor White
     Write-Host "  .\Enum-AzureARM.ps1 -UseCurrentUser -OutputFormat csv -OutputFile 'MyReport.csv'" -ForegroundColor Green
@@ -261,6 +301,14 @@ function Test-AuthenticationParameters {
         throw "AccessTokenGraph parameter cannot be empty or whitespace. Please provide a valid Graph access token or remove the parameter."
     }
 
+    if ($PSBoundParameters.ContainsKey('AccessTokenStorage') -and [string]::IsNullOrWhiteSpace($AccessTokenStorage)) {
+        throw "AccessTokenStorage parameter cannot be empty or whitespace. Please provide a valid Storage access token or remove the parameter."
+    }
+
+    if ($PSBoundParameters.ContainsKey('AccessTokenKeyVault') -and [string]::IsNullOrWhiteSpace($AccessTokenKeyVault)) {
+        throw "AccessTokenKeyVault parameter cannot be empty or whitespace. Please provide a valid Key Vault access token or remove the parameter."
+    }
+
     # Validate OutputFile is not null or empty
     if ([string]::IsNullOrWhiteSpace($OutputFile)) {
         throw "OutputFile parameter cannot be null or empty."
@@ -295,6 +343,16 @@ function Test-AuthenticationParameters {
         if ($AccessTokenGraph) {
             $Script:PerformGraphChecks = $true
             Write-Verbose "Graph token provided: Graph user checks will be performed"
+        }
+        if ($AccessTokenStorage) {
+            $Script:StorageToken = $AccessTokenStorage
+            $Script:AuthenticationStatus.StorageToken = $true
+            Write-Verbose "Storage token provided: Enhanced storage account enumeration enabled"
+        }
+        if ($AccessTokenKeyVault) {
+            $Script:KeyVaultToken = $AccessTokenKeyVault
+            $Script:AuthenticationStatus.KeyVaultToken = $true
+            Write-Verbose "Key Vault token provided: Enhanced key vault enumeration enabled"
         }
     }
 
@@ -1249,8 +1307,8 @@ function Show-ResourceTokenGuidance {
             Write-Host "  # Get token" -ForegroundColor Gray
             Write-Host "  `$storageToken = (az account get-access-token --resource=https://storage.azure.com/ | ConvertFrom-Json).accessToken" -ForegroundColor White
             Write-Host "  # Use with direct REST API calls" -ForegroundColor Gray
-            Write-Host "  `$headers = @{ 'Authorization' = \"Bearer `$storageToken\"; 'x-ms-version' = '2020-10-02' }" -ForegroundColor White
-            Write-Host "  Invoke-WebRequest -Uri \"https://storageaccount.blob.core.windows.net/container/blob\" -Headers `$headers" -ForegroundColor White
+            Write-Host "  `$headers = @{ 'Authorization' = "Bearer `$storageToken"; 'x-ms-version' = '2020-10-02' }" -ForegroundColor White
+            Write-Host "  Invoke-WebRequest -Uri "https://storageaccount.blob.core.windows.net/container/blob" -Headers `$headers" -ForegroundColor White
         }
 
         if ($guidance.Resource -eq "KeyVault") {
@@ -1258,8 +1316,8 @@ function Show-ResourceTokenGuidance {
             Write-Host "  # Get token" -ForegroundColor Gray
             Write-Host "  `$kvToken = (az account get-access-token --resource=https://vault.azure.net/ | ConvertFrom-Json).accessToken" -ForegroundColor White
             Write-Host "  # Use with direct REST API calls" -ForegroundColor Gray
-            Write-Host "  `$headers = @{ 'Authorization' = \"Bearer `$kvToken\" }" -ForegroundColor White
-            Write-Host "  Invoke-RestMethod -Uri \"https://keyvault.vault.azure.net/secrets/secretname?api-version=7.3\" -Headers `$headers" -ForegroundColor White
+            Write-Host "  `$headers = @{ 'Authorization' = "Bearer `$kvToken" }" -ForegroundColor White
+            Write-Host "  Invoke-RestMethod -Uri "https://keyvault.vault.azure.net/secrets/secretname?api-version=7.3" -Headers `$headers" -ForegroundColor White
         }
 
         Write-Host ""
@@ -1411,9 +1469,9 @@ function Test-TenantMismatch {
                         Write-Host ""
 
                         Write-Host "Option 2: Use Service Principal (if you have SP credentials)" -ForegroundColor Cyan
-                        Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal \" -ForegroundColor White
-                        Write-Host "                       -ApplicationId '<app-id>' \" -ForegroundColor White
-                        Write-Host "                       -ClientSecret '<secret>' \" -ForegroundColor White
+                        Write-Host "  .\Enum-AzureARM.ps1 -UseServicePrincipal " -ForegroundColor White
+                        Write-Host "                       -ApplicationId '<app-id>' " -ForegroundColor White
+                        Write-Host "                       -ClientSecret '<secret>' " -ForegroundColor White
                         Write-Host "                       -TenantId '$($sub.tenantId)'" -ForegroundColor White
                         Write-Host ""
 
@@ -3081,16 +3139,45 @@ function Get-StorageBlobs {
                 $downloadSuccess = $false
 
                 Write-Debug "Attempting to download blob: $blobName"
+                # Show progress dot for small files (< 1MB) to indicate activity
+                if ($blob.Size -and $blob.Size -lt 1048576) {
+                    Write-Host "." -ForegroundColor Gray -NoNewline
+                }
 
-                # Method 1: Try Azure CLI first (most reliable for RBAC)
-                try {
-                    az storage blob download --account-name $StorageAccountName --container-name $ContainerName --name $blobName --file $localFilePath --auth-mode login 2>$null | Out-Null
-                    if (Test-Path $localFilePath) {
-                        $downloadSuccess = $true
-                        Write-Debug "Successfully downloaded $blobName using Azure CLI"
+                # Method 0: Try Storage OAuth token first (if available)
+                if ($Script:StorageToken -and $Script:AuthenticationStatus.StorageToken) {
+                    try {
+                        Write-Debug "Attempting to download blob using Storage OAuth token: $blobName"
+                        
+                        $headers = @{
+                            "Authorization" = "Bearer $Script:StorageToken"
+                            "x-ms-version" = "2021-08-06"
+                        }
+
+                        $blobUrl = "https://$StorageAccountName.blob.core.windows.net/$ContainerName/$blobName"
+                        
+                        Invoke-WebRequest -Uri $blobUrl -Headers $headers -OutFile $localFilePath -ErrorAction Stop
+                        
+                        if (Test-Path $localFilePath) {
+                            $downloadSuccess = $true
+                            Write-Debug "Successfully downloaded $blobName using Storage OAuth token"
+                        }
+                    } catch {
+                        Write-Debug "Storage OAuth token download failed for $blobName : $($_.Exception.Message)"
                     }
-                } catch {
-                    Write-Debug "Azure CLI download failed for $blobName : $($_.Exception.Message)"
+                }
+
+                # Method 1: Try Azure CLI (if OAuth token method failed)
+                if (-not $downloadSuccess) {
+                    try {
+                        az storage blob download --account-name $StorageAccountName --container-name $ContainerName --name $blobName --file $localFilePath --auth-mode login 2>$null | Out-Null
+                        if (Test-Path $localFilePath) {
+                            $downloadSuccess = $true
+                            Write-Debug "Successfully downloaded $blobName using Azure CLI"
+                        }
+                    } catch {
+                        Write-Debug "Azure CLI download failed for $blobName : $($_.Exception.Message)"
+                    }
                 }
 
                 # Method 2: Try PowerShell Az.Storage module
@@ -3158,6 +3245,11 @@ function Get-StorageBlobs {
             }
         }
 
+        # Add newline to clean up any progress dots
+        if ($BlobList | Where-Object { $_.Size -and $_.Size -lt 1048576 }) {
+            Write-Host ""
+        }
+        
         Write-Output "  Download complete: $($downloadResults.SuccessfulDownloads.Count)/$($downloadResults.TotalFiles) files successful"
         return $downloadResults
 
@@ -3268,6 +3360,74 @@ function Get-StorageAccountDetails {
 
     try {
         Write-Debug "Enumerating storage account details for: $StorageAccountName"
+        Write-Host "  🔍 Starting detailed enumeration of storage account: $StorageAccountName" -ForegroundColor Cyan
+        
+        # Inform user about Storage token benefits if not provided
+        if (-not ($Script:StorageToken -and $Script:AuthenticationStatus.StorageToken)) {
+            Write-Host "    💡 Tip: Use -AccessTokenStorage for enhanced blob enumeration with OAuth authentication" -ForegroundColor DarkCyan
+        } else {
+            # Test Storage OAuth token validity and provide detailed diagnostics
+            try {
+                Write-Debug "Testing Storage OAuth token validity with a simple API call"
+                
+                # First, try to decode token to check scope (basic JWT parsing)
+                try {
+                    $tokenParts = $Script:StorageToken.Split('.')
+                    if ($tokenParts.Count -ge 2) {
+                        $payload = $tokenParts[1]
+                        # Add padding if needed for Base64 decoding
+                        while ($payload.Length % 4) { $payload += "=" }
+                        $tokenBytes = [Convert]::FromBase64String($payload)
+                        $tokenJson = [System.Text.Encoding]::UTF8.GetString($tokenBytes)
+                        $tokenData = $tokenJson | ConvertFrom-Json
+                        
+                        if ($tokenData.aud) {
+                            Write-Debug "Token audience (aud): $($tokenData.aud)"
+                            if ($tokenData.aud -notlike "*storage.azure.com*" -and $tokenData.aud -ne "https://storage.azure.com/") {
+                                Write-Host "    ⚠️  Token audience may be incorrect for Storage access" -ForegroundColor Yellow
+                                Write-Host "       Expected: https://storage.azure.com/, Found: $($tokenData.aud)" -ForegroundColor Gray
+                            }
+                        }
+                        
+                        if ($tokenData.scp -or $tokenData.roles) {
+                            $scopes = if ($tokenData.scp) { $tokenData.scp } else { $tokenData.roles -join " " }
+                            Write-Debug "Token scopes/roles: $scopes"
+                        }
+                    }
+                } catch {
+                    Write-Debug "Could not decode Storage token for scope analysis: $($_.Exception.Message)"
+                }
+                
+                # Test the token with Storage API
+                $testHeaders = @{
+                    "Authorization" = "Bearer $Script:StorageToken"
+                    "x-ms-version" = "2021-08-06"
+                }
+                $testUrl = "https://$StorageAccountName.blob.core.windows.net/?comp=list&maxresults=1"
+                $testResponse = Invoke-WebRequest -Uri $testUrl -Headers $testHeaders -Method GET -TimeoutSec 10 -ErrorAction Stop
+                Write-Debug "Storage OAuth token test successful - Status: $($testResponse.StatusCode)"
+                Write-Host "    ✅ Storage OAuth token validated successfully" -ForegroundColor Green
+                
+            } catch {
+                Write-Host "    ⚠️  Storage OAuth token validation failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Debug "Storage OAuth token test failed: $($_.Exception.Message)"
+                
+                if ($_.Exception.Message -like "*401*" -or $_.Exception.Message -like "*Unauthorized*") {
+                    Write-Host "       • Token appears to be invalid or expired" -ForegroundColor Red
+                    Write-Host "       • Verify token was issued for scope: https://storage.azure.com/" -ForegroundColor Gray
+                } elseif ($_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*") {
+                    Write-Host "       • Token lacks necessary Storage permissions" -ForegroundColor Red
+                    Write-Host "       • Required role: Storage Blob Data Reader (or higher)" -ForegroundColor Gray
+                } else {
+                    Write-Host "       • Unexpected error: $($_.Exception.Message)" -ForegroundColor Red
+                }
+                
+                Write-Host "    💡 Troubleshooting tips:" -ForegroundColor Cyan
+                Write-Host "       • Ensure token scope is 'https://storage.azure.com/'" -ForegroundColor Gray
+                Write-Host "       • Verify 'Storage Blob Data Reader' role assignment" -ForegroundColor Gray
+                Write-Host "       • Check token expiration time" -ForegroundColor Gray
+            }
+        }
 
         $storageDetails = @{
             Name = $StorageAccountName
@@ -3325,9 +3485,15 @@ function Get-StorageAccountDetails {
         try {
             $containersResponse = Invoke-ARMRequest -Uri "https://management.azure.com$StorageAccountId/blobServices/default/containers?api-version=2022-05-01"
             if ($containersResponse -and $containersResponse.value) {
-                Write-Debug "Found $($containersResponse.value.Count) containers in $StorageAccountName"
+                $totalContainers = $containersResponse.value.Count
+                Write-Debug "Found $totalContainers containers in $StorageAccountName"
+                Write-Host "    📦 Processing $totalContainers containers..." -ForegroundColor Cyan
+                $containerIndex = 0
 
                 foreach ($container in $containersResponse.value) {
+                    $containerIndex++
+                    $containerProgress = [math]::Round(($containerIndex / $totalContainers) * 100, 1)
+                    Write-Host "    ├─ Container [$containerIndex/$totalContainers] $($container.name) ($containerProgress%)" -ForegroundColor Gray
                     $containerDetail = @{
                         Name = $container.name
                         PublicAccess = $container.properties.publicAccess
@@ -3340,13 +3506,150 @@ function Get-StorageAccountDetails {
                         Error = $null
                     }
 
+                    # Check if we have any method available for blob enumeration
+                    $hasStorageToken = ($Script:StorageToken -and $Script:AuthenticationStatus.StorageToken)
+                    $hasStorageKey = ($storageAccountKey -and $storageAccountKey -ne "")
+                    $hasAzureCLI = (Get-Command az -ErrorAction SilentlyContinue)
+                    $hasAzModule = (Get-Module -ListAvailable -Name Az.Storage)
+
+                    if (-not $hasStorageToken -and -not $hasStorageKey -and -not $hasAzureCLI -and -not $hasAzModule) {
+                        # No blob enumeration methods available - inform user
+                        Write-Host "      ℹ️  Blob enumeration skipped - requires Storage token, account key, Azure CLI, or Az.Storage module" -ForegroundColor DarkYellow
+                        $containerDetail.Blobs = @("Blob enumeration requires: -AccessTokenStorage parameter, Storage Account Key access, Azure CLI authentication, or Az.Storage PowerShell module")
+                        $containerDetail.BlobCount = "Unknown - authentication required"
+                        $containerDetail.Error = "No blob enumeration method available"
+                        $storageDetails.Containers += $containerDetail
+                        continue
+                    }
+
                     # Try multiple approaches to enumerate blobs
                     $blobEnumerated = $false
+                    Write-Host "      🔍 Enumerating blobs..." -ForegroundColor Yellow -NoNewline
+
+                    # Method 0: Use Storage REST API with OAuth token (if available)
+                    if ($Script:StorageToken -and $Script:AuthenticationStatus.StorageToken) {
+                        try {
+                            Write-Debug "Enumerating blobs using Storage OAuth token in container: $($container.name)"
+
+                            $resourcePath = "/$($container.name)"
+                            $queryParams = @{
+                                "restype" = "container"
+                                "comp" = "list"
+                                "maxresults" = "1000"  # Limit to first 1000 blobs for performance
+                            }
+
+                            $headers = @{
+                                "Authorization" = "Bearer $Script:StorageToken"
+                                "x-ms-version" = "2021-08-06"
+                                "x-ms-date" = [DateTime]::UtcNow.ToString("R")
+                            }
+
+                            $blobUrl = "https://$StorageAccountName.blob.core.windows.net$resourcePath" + "?" + (($queryParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "&")
+                            Write-Debug "OAuth blob enumeration URL: $blobUrl"
+                            Write-Debug "OAuth headers: Authorization=Bearer [REDACTED], x-ms-version=$($headers['x-ms-version'])"
+
+                            $response = Invoke-RestMethod -Uri $blobUrl -Headers $headers -Method GET -TimeoutSec 30 -ErrorAction Stop
+                            Write-Debug "OAuth response received. Response type: $($response.GetType().Name)"
+
+                            # Parse the response - it should be XML from Azure Storage REST API
+                            $blobs = @()
+                            $blobEnumerated = $false
+
+                            if ($response) {
+                                Write-Debug "OAuth response content available, parsing structure..."
+                                
+                                # Check if we have EnumerationResults structure
+                                if ($response.EnumerationResults) {
+                                    Write-Debug "Found EnumerationResults structure"
+                                    
+                                    # Check for Blobs element
+                                    if ($response.EnumerationResults.Blobs) {
+                                        Write-Debug "Found Blobs element in response"
+                                        
+                                        # Get the actual blob list
+                                        $blobList = $response.EnumerationResults.Blobs.Blob
+                                        if ($blobList) {
+                                            Write-Debug "Found blob list with $(@($blobList).Count) items"
+                                            
+                                            # Handle both single blob and multiple blobs
+                                            $blobArray = @($blobList)  # Ensure it's always an array
+                                            foreach ($blob in $blobArray) {
+                                                try {
+                                                    $blobs += @{
+                                                        Name = $blob.Name
+                                                        Size = if ($blob.Properties.'Content-Length') { [long]$blob.Properties.'Content-Length' } else { 0 }
+                                                        LastModified = $blob.Properties.'Last-Modified'
+                                                        ContentType = $blob.Properties.'Content-Type'
+                                                        ETag = $blob.Properties.Etag
+                                                        BlobType = $blob.Properties.BlobType
+                                                    }
+                                                    Write-Debug "Processed blob: $($blob.Name)"
+                                                } catch {
+                                                    Write-Debug "Error processing blob $($blob.Name): $($_.Exception.Message)"
+                                                }
+                                            }
+                                        } else {
+                                            Write-Debug "Blobs element exists but Blob array is null or empty"
+                                        }
+                                    } else {
+                                        Write-Debug "No Blobs element found in EnumerationResults - container appears to be empty"
+                                    }
+                                } else {
+                                    Write-Debug "No EnumerationResults found in response"
+                                    # Log the response structure for debugging
+                                    if ($response -is [string]) {
+                                        Write-Debug "Response is string, first 200 chars: $($response.Substring(0, [Math]::Min(200, $response.Length)))"
+                                    } else {
+                                        Write-Debug "Response type: $($response.GetType().Name), properties: $($response | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name -First 5)"
+                                    }
+                                }
+                            } else {
+                                Write-Debug "No response received from OAuth blob enumeration"
+                            }
+
+                            # Set the results
+                            $containerDetail.Blobs = $blobs
+                            $containerDetail.BlobCount = $blobs.Count
+                            $blobEnumerated = $true
+                            
+                            if ($blobs.Count -gt 0) {
+                                Write-Host " ✅ Found $($blobs.Count) blobs (via OAuth)" -ForegroundColor Green
+                                Write-Debug "Successfully enumerated $($blobs.Count) blobs in container $($container.name) using Storage OAuth token"
+                            } else {
+                                Write-Host " 📭 No blobs found (via OAuth)" -ForegroundColor DarkYellow
+                                Write-Debug "No blobs found in container $($container.name) - container may be empty or access denied"
+                            }
+
+                        } catch {
+                            Write-Host " ❌ OAuth method failed" -ForegroundColor Red
+                            Write-Debug "Failed to enumerate blobs using Storage OAuth token in container $($container.name): $($_.Exception.Message)"
+                            
+                            # Check for specific error types
+                            if ($_.Exception.Message -like "*401*" -or $_.Exception.Message -like "*Unauthorized*") {
+                                Write-Debug "OAuth token appears to be invalid or expired for storage access"
+                                $containerDetail.Error = "OAuth authentication failed - token may be invalid or expired"
+                            } elseif ($_.Exception.Message -like "*403*" -or $_.Exception.Message -like "*Forbidden*") {
+                                Write-Debug "OAuth token lacks sufficient permissions for blob enumeration"
+                                $containerDetail.Error = "OAuth token lacks Storage Blob Data Reader permissions"
+                            } else {
+                                $containerDetail.Error = "OAuth blob enumeration failed: $($_.Exception.Message)"
+                            }
+                        }
+                    }
 
                     # Method 1: Use Storage REST API with account key (if available)
-                    if ($storageAccountKey) {
-                        try {
-                            Write-Debug "Enumerating blobs using storage account key in container: $($container.name)"
+                    # Note: Even if OAuth method completed successfully with 0 blobs, we might want to verify with account key if available
+                    if ((-not $blobEnumerated) -or ($blobEnumerated -and $containerDetail.BlobCount -eq 0 -and $storageAccountKey)) {
+                        # If OAuth found 0 blobs but we have account key, verify the result
+                        if ($blobEnumerated -and $containerDetail.BlobCount -eq 0) {
+                            Write-Debug "OAuth method found 0 blobs, verifying with storage account key method"
+                            Write-Host " 🔄 Verifying with account key..." -ForegroundColor Cyan -NoNewline
+                            $blobEnumerated = $false  # Reset to try account key method
+                        }
+                        
+                        if (-not $blobEnumerated -and $storageAccountKey) {
+                            try {
+                                Write-Debug "Enumerating blobs using storage account key in container: $($container.name)"
 
                             $resourcePath = "/$($container.name)"
                             $queryParams = @{
@@ -3395,6 +3698,7 @@ function Get-StorageAccountDetails {
                                     $containerDetail.Blobs = $blobs
                                     $containerDetail.BlobCount = $blobs.Count
                                     $blobEnumerated = $true
+                                    Write-Host " ✅ Found $($blobs.Count) blobs" -ForegroundColor Green
 
                                     Write-Debug "Found $($blobs.Count) blobs in container $($container.name) using storage key"
 
@@ -3402,12 +3706,15 @@ function Get-StorageAccountDetails {
                                     $containerDetail.Blobs = @()
                                     $containerDetail.BlobCount = 0
                                     $blobEnumerated = $true
+                                    Write-Host " 📭 No blobs found" -ForegroundColor DarkYellow
                                     Write-Debug "No blobs found in container $($container.name)"
                                 }
                             }
 
-                        } catch {
-                            Write-Debug "Failed to enumerate blobs using storage key in container $($container.name): $($_.Exception.Message)"
+                            } catch {
+                                Write-Host " ❌ Storage key method failed" -ForegroundColor Red
+                                Write-Debug "Failed to enumerate blobs using storage key in container $($container.name): $($_.Exception.Message)"
+                            }
                         }
                     }
 
@@ -3439,12 +3746,14 @@ function Get-StorageAccountDetails {
                                     $containerDetail.Blobs = $blobs
                                     $containerDetail.BlobCount = $blobs.Count
                                     $blobEnumerated = $true
+                                    Write-Host " ✅ Found $($blobs.Count) blobs (via CLI)" -ForegroundColor Green
 
                                     Write-Debug "Found $($blobs.Count) blobs in container $($container.name) using Azure CLI"
                                 }
                             }
 
                         } catch {
+                            Write-Host " ❌ CLI method failed" -ForegroundColor Red
                             Write-Debug "Failed to enumerate blobs using Azure CLI in container $($container.name): $($_.Exception.Message)"
                         }
                     }
@@ -3480,6 +3789,7 @@ function Get-StorageAccountDetails {
                                         $containerDetail.Blobs = $blobs
                                         $containerDetail.BlobCount = $blobs.Count
                                         $blobEnumerated = $true
+                                        Write-Host " ✅ Found $($blobs.Count) blobs (via PowerShell)" -ForegroundColor Green
 
                                         Write-Debug "Found $($blobs.Count) blobs in container $($container.name) using Az.Storage"
                                     }
@@ -3487,6 +3797,7 @@ function Get-StorageAccountDetails {
                             }
 
                         } catch {
+                            Write-Host " ❌ PowerShell method failed" -ForegroundColor Red
                             Write-Debug "Failed to enumerate blobs using Az.Storage in container $($container.name): $($_.Exception.Message)"
                         }
                     }
@@ -3495,10 +3806,12 @@ function Get-StorageAccountDetails {
                     if (-not $blobEnumerated) {
                         if (-not $storageAccountKey) {
                             $containerDetail.Blobs = @("Blob enumeration requires Storage Blob Data Reader role or storage account key access")
+                            Write-Host " ⚠️  Access denied - needs permissions" -ForegroundColor Yellow
                             Write-Debug "No storage account key available and alternative methods failed for $($container.name)"
                         } else {
                             $containerDetail.Blobs = @("Failed to enumerate blobs - insufficient permissions or connectivity issues")
                             $containerDetail.Error = "All blob enumeration methods failed"
+                            Write-Host " ❌ All enumeration methods failed" -ForegroundColor Red
                         }
                     }
 
@@ -3541,6 +3854,15 @@ function Get-StorageAccountDetails {
                     }
 
                     $storageDetails.Containers += $containerDetail
+                }
+
+                # Provide summary information if no Storage token was used
+                if (-not ($Script:StorageToken -and $Script:AuthenticationStatus.StorageToken)) {
+                    $containersWithoutBlobs = $storageDetails.Containers | Where-Object { $_.Error -eq "No blob enumeration method available" }
+                    if ($containersWithoutBlobs -and $containersWithoutBlobs.Count -gt 0) {
+                        Write-Host "    📋 Summary: $($containersWithoutBlobs.Count) containers listed without blob enumeration" -ForegroundColor Yellow
+                        Write-Host "    💡 Use -AccessTokenStorage '<storage_token>' for complete blob enumeration" -ForegroundColor DarkCyan
+                    }
                 }
             } else {
                 # ARM API succeeded but returned no containers - try PowerShell fallback
@@ -3811,6 +4133,7 @@ function Get-StorageAccountDetails {
             Write-Debug "Could not analyze current user permissions for $StorageAccountName : $($_.Exception.Message)"
         }
 
+        Write-Host "  ✅ Completed enumeration of storage account: $StorageAccountName" -ForegroundColor Green
         return $storageDetails
 
     } catch {
@@ -7592,14 +7915,24 @@ function Initialize-Authentication {
                 }
 
                 try {
+                    # Convert URL-safe Base64 to standard Base64
+                    $payload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                    
                     # Add padding if needed for base64 decoding
-                    $payload = $tokenParts[1]
                     $paddingNeeded = 4 - ($payload.Length % 4)
                     if ($paddingNeeded -ne 4) {
                         $payload += "=" * $paddingNeeded
                     }
 
-                    $decodedPayload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($payload))
+                    try {
+                        $payloadBytes = [System.Convert]::FromBase64String($payload)
+                        $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                    } catch {
+                        # Fallback: try without padding (some JWT implementations vary)
+                        $originalPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                        $payloadBytes = [System.Convert]::FromBase64String($originalPayload)
+                        $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                    }
                     $claims = $decodedPayload | ConvertFrom-Json
                 } catch {
                     $tokenValidationErrors += "Graph token payload invalid: Unable to decode JWT payload - $($_.Exception.Message)"
@@ -8322,15 +8655,30 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                     # Decode the JWT token to extract claims
                     $tokenParts = $AccessTokenGraph.Split('.')
                     if ($tokenParts.Length -ge 2) {
-                        # Add padding if needed for base64 decoding
-                        $payload = $tokenParts[1]
-                        $paddingNeeded = 4 - ($payload.Length % 4)
-                        if ($paddingNeeded -ne 4) {
-                            $payload += "=" * $paddingNeeded
-                        }
+                        try {
+                            # Convert URL-safe Base64 to standard Base64
+                            $payload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                            
+                            # Add padding if needed for base64 decoding
+                            $paddingNeeded = 4 - ($payload.Length % 4)
+                            if ($paddingNeeded -ne 4) {
+                                $payload += "=" * $paddingNeeded
+                            }
 
-                        $decodedPayload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($payload))
-                        $tokenClaims = $decodedPayload | ConvertFrom-Json
+                            try {
+                                $payloadBytes = [System.Convert]::FromBase64String($payload)
+                                $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                            } catch {
+                                # Fallback: try without padding
+                                $originalPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                                $payloadBytes = [System.Convert]::FromBase64String($originalPayload)
+                                $decodedPayload = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+                            }
+                            $tokenClaims = $decodedPayload | ConvertFrom-Json
+                        } catch {
+                            Write-Warning "Failed to decode Graph token for analysis: $($_.Exception.Message)"
+                            $tokenClaims = $null
+                        }
 
                         # Extract useful token information
                         $tokenAnalysis = @{
@@ -8651,14 +8999,23 @@ if ($Script:PerformGraphChecks -or $AccessTokenGraph) {
                 # Try to extract basic user info from Graph token
                 $tokenParts = $AccessTokenGraph.Split('.')
                 if ($tokenParts.Length -ge 2) {
-                    $payload = $tokenParts[1]
+                    # Convert URL-safe Base64 to standard Base64
+                    $payload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
                     $payloadLength = $payload.Length
                     $paddingNeeded = 4 - ($payloadLength % 4)
                     if ($paddingNeeded -ne 4) {
                         $payload += "=" * $paddingNeeded
                     }
-                    $decodedBytes = [System.Convert]::FromBase64String($payload)
-                    $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
+                    
+                    try {
+                        $decodedBytes = [System.Convert]::FromBase64String($payload)
+                        $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
+                    } catch {
+                        # Fallback: try without padding
+                        $originalPayload = $tokenParts[1].Replace('-', '+').Replace('_', '/')
+                        $decodedBytes = [System.Convert]::FromBase64String($originalPayload)
+                        $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
+                    }
                     $claims = $decodedJson | ConvertFrom-Json
 
                     if ($claims.upn -or $claims.unique_name -or $claims.preferred_username) {
@@ -8748,19 +9105,168 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
         $subscriptionName = $null
         $subscriptionSelected = $false
 
-        # Check if there's an existing valid context, but always verify subscription choice
-        if ($null -ne $context -and $context.Subscription -and $context.Subscription.Id) {
-            $tenantId = $context.Tenant.Id
-            $subscriptionId = $context.Subscription.Id
-            $subscriptionName = $context.Subscription.Name
+        # Determine authentication method for subscription selection logic
+        $isTokenBasedAuth = $false
+        $isServicePrincipalAuth = $false
+        $isUserAuth = $false
 
-            Write-Output "Current Azure PowerShell Context:"
-            Write-Output "Tenant ID: $tenantId"
-            Write-Output "Subscription: $subscriptionName ($subscriptionId)"
-            Write-Output ""
+        if ($AccessTokenARM -or $AccessTokenGraph) {
+            $isTokenBasedAuth = $true
+            Write-Verbose "Detected token-based authentication - will skip interactive subscription selection"
+        } elseif ($UseServicePrincipal -or ($ServicePrincipalId -and $ServicePrincipalSecret)) {
+            $isServicePrincipalAuth = $true
+            Write-Verbose "Detected service principal authentication - will skip interactive subscription selection"
+        } elseif ($UseCurrentUser) {
+            $isUserAuth = $true
+            Write-Verbose "Detected user authentication - interactive subscription selection enabled"
+        }
 
-            # Always check if multiple subscriptions are available (unless in non-interactive mode)
-            if (-not $NoInteractiveAuth) {
+        # Set authentication method for tracking
+        $authMethod = if ($isTokenBasedAuth) { "Token" } elseif ($isServicePrincipalAuth) { "ServicePrincipal" } elseif ($isUserAuth) { "CurrentUser" } else { "Unknown" }
+        
+        # Add authentication method to the script's tracking
+        if (-not $Script:AuthenticationStatus) {
+            $Script:AuthenticationStatus = @{}
+        }
+        $Script:AuthenticationStatus.Method = $authMethod
+        Write-Verbose "Authentication method set to: $authMethod"
+
+        # For token-based authentication, extract tenant ID from JWT claims if available
+        if ($isTokenBasedAuth -and $AccessTokenARM -and -not $tenantId) {
+            try {
+                $tokenParts = $AccessTokenARM.Split('.')
+                if ($tokenParts.Length -ge 2) {
+                    # Decode the payload (with padding fix)
+                    $payload = $tokenParts[1]
+                    $payloadLength = $payload.Length
+                    $paddingNeeded = 4 - ($payloadLength % 4)
+                    if ($paddingNeeded -ne 4) {
+                        $payload += "=" * $paddingNeeded
+                    }
+                    $decodedBytes = [System.Convert]::FromBase64String($payload)
+                    $decodedJson = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
+                    $claims = $decodedJson | ConvertFrom-Json
+
+                    if ($claims.tid) {
+                        $tenantId = $claims.tid
+                        Write-Output "Extracted tenant ID from ARM token: $($claims.tid)"
+                        
+                        # Validate the tenant ID matches if we have a context
+                        if ($context -and $context.Tenant.Id -and $context.Tenant.Id -ne $tenantId) {
+                            Write-Warning "Token tenant ID ($tenantId) differs from current context tenant ($($context.Tenant.Id))"
+                            Write-Output "Using tenant ID from token for enumeration: $tenantId"
+                        }
+                    }
+
+                    # Log additional token information for debugging
+                    if ($claims.aud) {
+                        Write-Verbose "Token audience: $($claims.aud)"
+                    }
+                    if ($claims.appid) {
+                        Write-Verbose "Token application ID: $($claims.appid)"
+                    }
+                }
+            } catch {
+                Write-Verbose "Could not extract tenant information from ARM token: $($_.Exception.Message)"
+            }
+        }
+
+        # Handle subscription selection based on authentication method
+        if ($isTokenBasedAuth -or $isServicePrincipalAuth) {
+            # For token-based or service principal authentication
+            if ($NoInteractiveAuth) {
+                # Non-interactive mode: use whatever subscriptions the token/credentials have access to
+                Write-Output "Using token/service principal authentication in non-interactive mode - proceeding with available subscription context..."
+                
+                if ($null -ne $context -and $context.Subscription -and $context.Subscription.Id) {
+                    $tenantId = if ($tenantId) { $tenantId } else { $context.Tenant.Id }
+                    $subscriptionId = $context.Subscription.Id
+                    $subscriptionName = $context.Subscription.Name
+                    $subscriptionSelected = $true
+                    
+                    Write-Output "Active subscription context:"
+                    Write-Output "Tenant ID: $tenantId"
+                    Write-Output "Subscription: $subscriptionName ($subscriptionId)"
+                    Write-Output ""
+                } else {
+                    # No subscription context available - use Graph-only mode
+                    Write-Output "No subscription access available with current token/credentials"
+                    Write-Output "Proceeding with Graph-only enumeration..."
+                    $subscriptionSelected = $true  # Skip subscription selection
+                }
+            } else {
+                # Interactive mode: allow subscription selection with tokens if explicitly requested
+                if ($ForceSubscriptionSelection) {
+                    Write-Output "Using token/service principal authentication - interactive subscription selection enabled..."
+                } else {
+                    Write-Output "Using token/service principal authentication - proceeding with default subscription (use -ForceSubscriptionSelection to choose different subscription)..."
+                }
+                
+                if ($null -ne $context -and $context.Subscription -and $context.Subscription.Id) {
+                    $tenantId = if ($tenantId) { $tenantId } else { $context.Tenant.Id }
+                    $subscriptionId = $context.Subscription.Id
+                    $subscriptionName = $context.Subscription.Name
+                    
+                    Write-Output "Current subscription context:"
+                    Write-Output "Tenant ID: $tenantId"  
+                    Write-Output "Subscription: $subscriptionName ($subscriptionId)"
+                    Write-Output ""
+                    
+                    # Check for multiple available subscriptions if forced selection is enabled
+                    if ($ForceSubscriptionSelection) {
+                        try {
+                            $availableSubscriptions = Invoke-RestMethod -Uri "https://management.azure.com/subscriptions?api-version=2022-12-01" -Headers @{
+                                Authorization = "Bearer $($Script:AccessTokenARM)"
+                                'Content-Type' = 'application/json'
+                            }
+                            
+                            if ($availableSubscriptions.value -and $availableSubscriptions.value.Count -gt 1) {
+                                Write-Host "🔍 Found $($availableSubscriptions.value.Count) available subscriptions with your token" -ForegroundColor Yellow
+                                
+                                $continueWithCurrent = Request-UserConfirmation -Message "Do you want to use current subscription $subscriptionName ($subscriptionId)?"
+                                if (-not $continueWithCurrent) {
+                                    Write-Host "🔄 Let's select a different subscription..." -ForegroundColor Cyan
+                                    $context = $null  # Force subscription selection
+                                    $subscriptionSelected = $false  # Reset the flag to ensure selection runs
+                                } else {
+                                    Write-Host "✓ Continuing with current subscription: $subscriptionName" -ForegroundColor Green
+                                    $subscriptionSelected = $true
+                                }
+                            } else {
+                                Write-Verbose "Only one subscription available with token, continuing with current context"
+                                $subscriptionSelected = $true
+                            }
+                        } catch {
+                            Write-Verbose "Could not check available subscriptions with token: $($_.Exception.Message)"
+                            Write-Verbose "Continuing with current context"
+                            $subscriptionSelected = $true
+                        }
+                    } else {
+                        # Default behavior: use current subscription without prompting
+                        Write-Host "✓ Using current subscription: $subscriptionName" -ForegroundColor Green
+                        $subscriptionSelected = $true
+                    }
+                } else {
+                    # No subscription context available - use Graph-only mode
+                    Write-Output "No subscription access available with current token/credentials"
+                    Write-Output "Proceeding with Graph-only enumeration..."
+                    $subscriptionSelected = $true  # Skip subscription selection
+                }
+            }
+        } elseif ($isUserAuth) {
+            # Check if there's an existing valid context, but always verify subscription choice for user authentication
+            if ($null -ne $context -and $context.Subscription -and $context.Subscription.Id) {
+                $tenantId = $context.Tenant.Id
+                $subscriptionId = $context.Subscription.Id
+                $subscriptionName = $context.Subscription.Name
+
+                Write-Output "Current Azure PowerShell Context:"
+                Write-Output "Tenant ID: $tenantId"
+                Write-Output "Subscription: $subscriptionName ($subscriptionId)"
+                Write-Output ""
+
+                # Always check if multiple subscriptions are available (unless in non-interactive mode)
+                if (-not $NoInteractiveAuth) {
                 # Check for multiple available subscriptions
                 try {
                     $availableSubscriptions = Invoke-RestMethod -Uri "https://management.azure.com/subscriptions?api-version=2022-12-01" -Headers @{
@@ -8789,15 +9295,25 @@ if ($Script:PerformARMChecks -and $Script:AuthenticationStatus.ARMToken) {
                     Write-Verbose "Continuing with current context"
                     $subscriptionSelected = $true
                 }
-            } else {
-                # Non-interactive mode - use current context
-                Write-Output "Non-interactive mode: Using current subscription context"
+                } else {
+                    # Non-interactive mode - use current context
+                    Write-Output "Non-interactive mode: Using current subscription context"
+                    $subscriptionSelected = $true
+                }
+            }
+        } else {
+            # Default behavior for other authentication methods
+            Write-Output "Unknown authentication method - using existing context if available"
+            if ($null -ne $context -and $context.Subscription -and $context.Subscription.Id) {
+                $tenantId = $context.Tenant.Id
+                $subscriptionId = $context.Subscription.Id
+                $subscriptionName = $context.Subscription.Name
                 $subscriptionSelected = $true
             }
         }
 
         # If no valid context or user chose to select different subscription
-        if ($null -eq $context -or -not $subscriptionSelected) {
+        if (($null -eq $context -or -not $subscriptionSelected) -and ($isUserAuth -or (($isTokenBasedAuth -or $isServicePrincipalAuth) -and $ForceSubscriptionSelection -and -not $NoInteractiveAuth))) {
             Write-Host "🔍 No valid Azure subscription context found or subscription change requested..." -ForegroundColor Yellow
 
             # Use the subscription selection function
